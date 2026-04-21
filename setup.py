@@ -22,8 +22,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'nn_controller = evolutionary_controller_ros.controllers.nn_controller:main',
-            'reactive_controller = evolutionary_controller_ros.controllers.reactive_controller:main',
+            'gp_controller = evolutionary_controller_ros.controllers.gp_controller:main',
             'orchestrator = evolutionary_controller_ros.evaluation.orchestrator:main',
         ],
     },

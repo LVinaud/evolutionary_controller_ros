@@ -74,7 +74,7 @@ Use with `ros2 launch evolutionary_controller_ros <file>`.
 
 | File | Purpose |
 |---|---|
-| `run_controller.launch.py` | Brings up only the `nn_controller` node. Use when the world and the robot are already running in the other terminals. |
+| `run_controller.launch.py` | Brings up only the `gp_controller` node. Use when the world and the robot are already running in the other terminals. |
 | `train.launch.py` | Brings up the `orchestrator` with parameters from `config/ga_params.yaml`. This is the training command. |
 | `demo_best.launch.py` | Brings up the controller loading a specific genome (`genome:=path/to/file.npy`). For demoing the best individual after training. |
 
@@ -105,8 +105,7 @@ Each file here is an **executable ROS2 node**. All of them subscribe to `/scan`,
 | File | Purpose |
 |---|---|
 | `__init__.py` | Empty. |
-| `nn_controller.py` | Neural network. Input = sensor features. Output = `[linear.x, angular.z]`. Weights come from a genome. |
-| `reactive_controller.py` | Potential fields (attractor to flag + repulsor from obstacles). Field gains come from a genome. |
+| `gp_controller.py` | Genetic-programming tree controller. Evaluates a typed decision tree at each tick; the selected leaf `(action, duration_ms)` runs for that duration. Genome is a JSON dict. |
 
 #### `evolution/` — the pure genetic algorithm
 

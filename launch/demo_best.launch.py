@@ -14,7 +14,7 @@ def generate_launch_description():
         genome_arg,
         Node(
             package='evolutionary_controller_ros',
-            executable='nn_controller',
+            executable='gp_controller',
             name='demo_controller',
             output='screen',
             parameters=[{'genome_path': LaunchConfiguration('genome')}],

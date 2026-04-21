@@ -1,4 +1,8 @@
-"""ROS2 node: neural network whose weights come from an evolutionary genome."""
+"""ROS2 node: GP tree controller. Loads a genome (dict JSON) and drives the robot.
+
+Evaluates the tree at each control tick; the selected leaf (action, duration_ms)
+runs for that duration before the tree is re-evaluated.
+"""
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan, Image
@@ -6,9 +10,9 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 
 
-class NNController(Node):
+class GPController(Node):
     def __init__(self):
-        super().__init__('nn_controller')
+        super().__init__('gp_controller')
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(LaserScan, '/scan', self._on_scan, 10)
         self.create_subscription(Odometry, '/odom_gt', self._on_odom, 10)
@@ -30,13 +34,13 @@ class NNController(Node):
         self.cam = msg
 
     def _step(self):
-        # TODO: network forward pass with self.genome + features from (scan, odom, cam) -> Twist
+        # TODO: build sensor dict, evaluate tree, publish Twist for current action
         self.cmd_pub.publish(Twist())
 
 
 def main():
     rclpy.init()
-    node = NNController()
+    node = GPController()
     try:
         rclpy.spin(node)
     finally:

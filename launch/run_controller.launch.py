@@ -6,8 +6,8 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='evolutionary_controller_ros',
-            executable='nn_controller',
-            name='nn_controller',
+            executable='gp_controller',
+            name='gp_controller',
             output='screen',
         ),
     ])
