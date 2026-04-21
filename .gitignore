@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Artefatos de colcon (caso rode do diretório do pacote por engano)
+build/
+install/
+log/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs de treino e genomas intermediários — commit só o campeão
+logs/
+genomas/*
+!genomas/.gitkeep
+!genomas/melhor.npy

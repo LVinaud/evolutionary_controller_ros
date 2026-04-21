@@ -1,0 +1,9 @@
+orquestrador:
+  ros__parameters:
+    populacao: 50
+    geracoes: 100
+    taxa_mutacao: 0.1
+    taxa_crossover: 0.7
+    tempo_max_episodio: 60.0
+    elite: 2
+    seed: 42
