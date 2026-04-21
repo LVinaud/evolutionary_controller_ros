@@ -1,9 +1,58 @@
+# Parâmetros do orquestrador evolutivo. Carregado por
+# launch/train.launch.py e consumido por evolutionary_controller_ros/
+# evaluation/orchestrator.py (o próprio nó declara os defaults; aqui só
+# sobrescrevemos o que interessa para a corrida).
+#
+# A rationale por trás de cada valor está em:
+#   - README.md, seção "Design decisions"
+#   - memory/project_gp_approach.md (memória persistente do agente)
+#
+# NOTA: gp_controller tem sua própria declaração de parâmetros
+# (velocidades, grab_reach, gripper, etc.). O orchestrator sobrescreve os
+# relevantes (genome_json, our_team, poses de alvos) via SetParameters
+# em cada episódio — não os colocamos aqui.
+
 orchestrator:
   ros__parameters:
-    population: 50
-    generations: 100
-    mutation_rate: 0.1
-    crossover_rate: 0.7
-    max_episode_time: 60.0
-    elite: 2
+    # --- Mundo / time ---
+    world_name: "capture_the_flag_world"
+    our_team: "blue"            # "blue" ou "red" — no treino somos azul
+
+    # --- GA ---
+    pop_size: 20
+    n_generations: 30
+    init_max_depth: 5
+    crossover_rate: 0.9         # Koza: filho é crossover OU mutação
+    elite_k: 1                  # elitismo K=1; função preparada para K>1
     seed: 42
+
+    # --- Episódio ---
+    scenario_duration_s: 30.0   # teto; parada antecipada ao entregar
+    tick_hz: 10.0               # 300 samples por episódio no teto
+
+    # --- Detecção de colisão ---
+    # 0.25m ≈ meia-diagonal do chassi do prm_2026 (0.42 × 0.31m, ~0.44m
+    # com rodas) com folga. Debounce evita múltiplos eventos por contato.
+    collision_radius_m: 0.25
+    collision_debounce_s: 0.5
+
+    # --- Entrega da bandeira ---
+    # Raio da zona de deploy: 1.0m.
+    deploy_zone_radius_m: 1.0
+
+    # --- Exploração ---
+    # Grid 0.5m para contar células distintas visitadas (métrica 'espaco_explorado').
+    exploration_cell_size_m: 0.5
+
+    # --- Cenários ---
+    # Lista JSON de poses iniciais do robô. Cada cenário gera 7 casos
+    # fitness; o vetor final tem 7 × len(scenarios) entradas.
+    # NÃO hardcodar poses de alvos aqui — o orchestrator lê /world/.../pose/info.
+    scenarios_json: >
+      [
+        {"name": "from_base",     "x": 6.0, "y": 0.0, "yaw":  3.14159},
+        {"name": "north_center",  "x": 0.0, "y": 3.0, "yaw": -1.5708}
+      ]
+
+    # --- Saída ---
+    output_dir: "genomes"        # onde salvar best.json
