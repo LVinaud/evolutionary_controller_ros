@@ -46,6 +46,7 @@ from sensor_msgs.msg import LaserScan, Image
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool, Float64MultiArray
+from std_srvs.srv import Empty
 
 try:
     from cv_bridge import CvBridge
@@ -79,6 +80,8 @@ class GPController(Node):
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.holding_pub = self.create_publisher(
             Bool, "/gp_controller/holding_flag", latched)
+
+        self.create_service(Empty, "/gp_controller/reset", self._on_reset)
 
         self.create_subscription(LaserScan, "/scan", self._on_scan, 10)
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
@@ -145,6 +148,20 @@ class GPController(Node):
             self.get_logger().warn("no genome_json parameter set; idling")
             return None
         return g.from_json(raw)
+
+    # ----------------------------------------------------------------------
+    # Reset service — called by episode.py between episodes
+    # ----------------------------------------------------------------------
+
+    def _on_reset(self, _request, response):
+        self._current_action = None
+        self._action_started_ns = 0
+        self._action_duration_ns = 0
+        self._last_twist = Twist()
+        self.cmd_pub.publish(self._last_twist)
+        self._set_holding(False)
+        self.get_logger().info("gp_controller reset")
+        return response
 
     # ----------------------------------------------------------------------
     # Subscriptions
