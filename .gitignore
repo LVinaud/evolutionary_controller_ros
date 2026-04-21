@@ -4,7 +4,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Artefatos de colcon (caso rode do diretório do pacote por engano)
+# colcon artifacts (in case it's run from the package dir by mistake)
 build/
 install/
 log/
@@ -14,8 +14,8 @@ log/
 .idea/
 *.swp
 
-# Logs de treino e genomas intermediários — commit só o campeão
+# Training logs and intermediate genomes — commit only the champion
 logs/
-genomas/*
-!genomas/.gitkeep
-!genomas/melhor.npy
+genomes/*
+!genomes/.gitkeep
+!genomes/best.npy

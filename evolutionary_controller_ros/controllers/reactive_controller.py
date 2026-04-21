@@ -1,4 +1,4 @@
-"""Nó ROS2: controlador reativo (campos potenciais) com ganhos evoluídos."""
+"""ROS2 node: reactive controller (potential fields) with evolved gains."""
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan, Image
@@ -6,9 +6,9 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 
 
-class ControladorReativo(Node):
+class ReactiveController(Node):
     def __init__(self):
-        super().__init__('controlador_reativo')
+        super().__init__('reactive_controller')
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(LaserScan, '/scan', self._on_scan, 10)
         self.create_subscription(Odometry, '/odom_gt', self._on_odom, 10)
@@ -18,7 +18,7 @@ class ControladorReativo(Node):
         self.scan = None
         self.odom = None
         self.cam = None
-        self.ganhos = None
+        self.gains = None
 
     def _on_scan(self, msg):
         self.scan = msg
@@ -30,13 +30,13 @@ class ControladorReativo(Node):
         self.cam = msg
 
     def _step(self):
-        # TODO: combinar campos atrator (bandeira) + repulsor (obstáculos) usando self.ganhos
+        # TODO: combine attractor (flag) + repulsor (obstacles) fields using self.gains
         self.cmd_pub.publish(Twist())
 
 
 def main():
     rclpy.init()
-    node = ControladorReativo()
+    node = ReactiveController()
     try:
         rclpy.spin(node)
     finally:

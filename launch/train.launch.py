@@ -13,8 +13,8 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='evolutionary_controller_ros',
-            executable='orquestrador',
-            name='orquestrador',
+            executable='orchestrator',
+            name='orchestrator',
             output='screen',
             parameters=[params],
         ),

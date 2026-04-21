@@ -1,7 +1,7 @@
-"""Representação do genoma e serialização (load/save)."""
+"""Genome representation and serialization (load/save)."""
 
 
-class Genoma:
+class Genome:
     def __init__(self):
         raise NotImplementedError
 

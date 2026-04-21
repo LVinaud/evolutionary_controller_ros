@@ -3,7 +3,7 @@
 <package format="3">
   <name>evolutionary_controller_ros</name>
   <version>0.0.1</version>
-  <description>Controlador evolutivo para o robô do prm_2026 (Capture The Flag).</description>
+  <description>Evolutionary controller for the prm_2026 robot (Capture The Flag).</description>
   <maintainer email="lazaropereiravn@gmail.com">Lazaro Pereira</maintainer>
   <license>MIT</license>
 

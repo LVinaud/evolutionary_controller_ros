@@ -1,9 +1,9 @@
-orquestrador:
+orchestrator:
   ros__parameters:
-    populacao: 50
-    geracoes: 100
-    taxa_mutacao: 0.1
-    taxa_crossover: 0.7
-    tempo_max_episodio: 60.0
+    population: 50
+    generations: 100
+    mutation_rate: 0.1
+    crossover_rate: 0.7
+    max_episode_time: 60.0
     elite: 2
     seed: 42

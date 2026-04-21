@@ -17,14 +17,14 @@ setup(
     zip_safe=True,
     maintainer='Lazaro Pereira',
     maintainer_email='lazaropereiravn@gmail.com',
-    description='Controlador evolutivo para o robô do prm_2026 (Capture The Flag).',
+    description='Evolutionary controller for the prm_2026 robot (Capture The Flag).',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'controlador_nn = evolutionary_controller_ros.controladores.controlador_nn:main',
-            'controlador_reativo = evolutionary_controller_ros.controladores.controlador_reativo:main',
-            'orquestrador = evolutionary_controller_ros.avaliacao.orquestrador:main',
+            'nn_controller = evolutionary_controller_ros.controllers.nn_controller:main',
+            'reactive_controller = evolutionary_controller_ros.controllers.reactive_controller:main',
+            'orchestrator = evolutionary_controller_ros.evaluation.orchestrator:main',
         ],
     },
 )

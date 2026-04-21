@@ -1,21 +1,21 @@
 # evolutionary_controller_ros
 
-Controlador evolutivo para o robô diff-drive do pacote [`prm_2026`](https://github.com/matheusbg8/prm_2026), disciplina SSC0712 (Programação de Robôs Móveis — USP São Carlos, 2026).
+Evolutionary controller for the diff-drive robot of the [`prm_2026`](https://github.com/matheusbg8/prm_2026) package, course SSC0712 (Mobile Robot Programming — USP São Carlos, 2026).
 
-## O que este pacote faz
+## What this package does
 
-O pacote `prm_2026` (do professor) traz a **plataforma**: mundo Gazebo, robô com sensores, controllers do `ros2_control`, bridges ROS↔Gazebo. Ele define o cenário **Capture The Flag** (mundo `arena_cilindros.sdf`, internamente `capture_the_flag_world`) — duas bases, duas bandeiras, zona de deploy, paredes e cilindros — mas não implementa a lógica de jogo. Entrega só stubs em `controle_robo.py` e `robo_mapper.py`.
+The `prm_2026` package (from the professor) provides the **platform**: Gazebo world, robot with sensors, `ros2_control` controllers, ROS↔Gazebo bridges. It defines the **Capture The Flag** scenario (world `arena_cilindros.sdf`, internally `capture_the_flag_world`) — two bases, two flags, a deploy zone, walls and cylinders — but does not implement the game logic. It only ships stubs in `controle_robo.py` and `robo_mapper.py`.
 
-Este pacote é o **cérebro**: implementa algoritmos evolutivos que aprendem políticas para o robô resolver o CTF (sair da base, achar bandeira adversária, pegar com o gripper, levar pra zona de deploy).
+This package is the **brain**: it implements evolutionary algorithms that learn policies for the robot to solve the CTF task (leave the base, find the opponent's flag, grab it with the gripper, bring it to the deploy zone).
 
-**Princípio de separação:** `prm_2026` fica intocado. Consumimos os tópicos que ele publica (`/scan`, `/imu`, `/odom_gt`, `/robot_cam/*`) e publicamos nos tópicos que ele consome (`/cmd_vel`, `/gripper_controller/commands`). Nada mais.
+**Separation principle:** `prm_2026` stays untouched. We consume the topics it publishes (`/scan`, `/imu`, `/odom_gt`, `/robot_cam/*`) and publish to the topics it consumes (`/cmd_vel`, `/gripper_controller/commands`). Nothing more.
 
-## Dependências
+## Dependencies
 
 - ROS 2 Humble
 - Gazebo Fortress (`ign gazebo` 6.x)
-- Pacote `prm_2026` clonado em `src/` do mesmo workspace
-- Python 3.10+, numpy, scipy, opencv (já vêm com ROS Humble)
+- `prm_2026` package cloned into `src/` of the same workspace
+- Python 3.10+, numpy, scipy, opencv (already shipped with ROS Humble)
 
 ## Build
 
@@ -25,205 +25,205 @@ colcon build --symlink-install --packages-select evolutionary_controller_ros
 source install/local_setup.bash
 ```
 
-Com `--symlink-install` o `install/` vira ponteiro pro código em `src/` — edições não exigem rebuild, só `source` (exceto quando mudar `setup.py` ou `package.xml`).
+With `--symlink-install`, `install/` becomes a pointer to the source in `src/` — edits do not require rebuilding, only a fresh `source` (except when `setup.py` or `package.xml` change).
 
-## Executar
+## Run
 
-Três terminais. No WSL é preciso `LIBGL_ALWAYS_SOFTWARE=1` nos que lançam Gazebo (aliases `rsim` e `rrobo` no `~/.bashrc` já fazem isso).
+Three terminals. On WSL you need `LIBGL_ALWAYS_SOFTWARE=1` on the ones that launch Gazebo (the `rsim` and `rrobo` aliases in `~/.bashrc` already do this).
 
 ```bash
-# 1) Mundo + bridge (pacote do professor)
+# 1) World + bridge (professor's package)
 rsim     # = LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 inicia_simulacao.launch.py
 
-# 2) Robô + controllers + RViz (pacote do professor)
+# 2) Robot + controllers + RViz (professor's package)
 rrobo    # = LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 carrega_robo.launch.py
 
-# 3) Controlador evolutivo (este pacote) — em vez do controle_robo do professor
-ros2 launch evolutionary_controller_ros rodar_controlador.launch.py
+# 3) Evolutionary controller (this package) — instead of the professor's controle_robo
+ros2 launch evolutionary_controller_ros run_controller.launch.py
 ```
 
-Treinamento (laço evolutivo):
+Training (evolutionary loop):
 
 ```bash
-ros2 launch evolutionary_controller_ros treinar.launch.py
+ros2 launch evolutionary_controller_ros train.launch.py
 ```
 
-Demonstração do melhor genoma treinado:
+Demo of the best trained genome:
 
 ```bash
-ros2 launch evolutionary_controller_ros demo_melhor.launch.py genoma:=genomas/melhor.npy
+ros2 launch evolutionary_controller_ros demo_best.launch.py genome:=genomes/best.npy
 ```
 
-## Estrutura completa, arquivo por arquivo
+## Full structure, file by file
 
-### Raiz do pacote
+### Package root
 
-| Arquivo | Função |
+| File | Purpose |
 |---|---|
-| `package.xml` | Manifesto ROS2 — nome, versão, dependências, tipo de build (`ament_python`). O `colcon` lê este arquivo. |
-| `setup.py` | Setup Python + registro dos **executáveis ROS2** (seção `entry_points`). É aqui que você declara "este script vira um comando `ros2 run`". |
-| `setup.cfg` | Config do setuptools — diz onde instalar os scripts. |
-| `resource/evolutionary_controller_ros` | Arquivo vazio. Marker que o `ament_index` usa pra descobrir o pacote. Nunca editar. |
+| `package.xml` | ROS2 manifest — name, version, dependencies, build type (`ament_python`). `colcon` reads this file. |
+| `setup.py` | Python setup + registration of **ROS2 executables** (`entry_points` section). This is where you declare "this script becomes a `ros2 run` command". |
+| `setup.cfg` | setuptools config — tells it where to install the scripts. |
+| `resource/evolutionary_controller_ros` | Empty file. Marker that `ament_index` uses to discover the package. Never edit. |
 | `LICENSE` | MIT. |
-| `README.md` | Este arquivo. |
-| `.gitignore` | O que não vai pro git (ver seção "O que está no git"). |
+| `README.md` | This file. |
+| `.gitignore` | What does not go into git (see "What is in git" section). |
 
-### `launch/` — arquivos de launch
+### `launch/` — launch files
 
-Use com `ros2 launch evolutionary_controller_ros <arquivo>`.
+Use with `ros2 launch evolutionary_controller_ros <file>`.
 
-| Arquivo | Função |
+| File | Purpose |
 |---|---|
-| `rodar_controlador.launch.py` | Sobe só o nó `controlador_nn`. Usar quando o mundo e o robô já estão rodando nos outros terminais. |
-| `treinar.launch.py` | Sobe o `orquestrador` com parâmetros de `config/ga_params.yaml`. Este é o comando de treino. |
-| `demo_melhor.launch.py` | Sobe o controlador carregando um genoma específico (`genoma:=caminho/arquivo.npy`). Pra demonstrar o melhor indivíduo depois do treino. |
+| `run_controller.launch.py` | Brings up only the `nn_controller` node. Use when the world and the robot are already running in the other terminals. |
+| `train.launch.py` | Brings up the `orchestrator` with parameters from `config/ga_params.yaml`. This is the training command. |
+| `demo_best.launch.py` | Brings up the controller loading a specific genome (`genome:=path/to/file.npy`). For demoing the best individual after training. |
 
-### `config/` — parâmetros
+### `config/` — parameters
 
-| Arquivo | Função |
+| File | Purpose |
 |---|---|
-| `ga_params.yaml` | Parâmetros do GA lidos pelo `orquestrador` (tamanho da pop, gerações, taxas de mutação/crossover, elite, seed). |
-| `neat_config.ini` | Placeholder. Só preencher se decidirmos usar a biblioteca `neat-python`. |
+| `ga_params.yaml` | GA parameters read by the `orchestrator` (population size, generations, mutation/crossover rates, elite, seed). |
+| `neat_config.ini` | Placeholder. Only fill in if we decide to use the `neat-python` library. |
 
-### `evolutionary_controller_ros/` — código Python
+### `evolutionary_controller_ros/` — Python code
 
-O nome da pasta é igual ao do pacote (convenção `ament_python`).
+The folder name equals the package name (`ament_python` convention).
 
 ```
 evolutionary_controller_ros/
-├── __init__.py             (vazio — marker do Python)
-├── controladores/          nós ROS2 (o "corpo" que pilota o robô)
-├── evolucao/               núcleo do GA (puro Python, sem ROS)
-├── avaliacao/              cola entre ROS e GA
-└── utils/                  helpers compartilhados
+├── __init__.py             (empty — Python marker)
+├── controllers/            ROS2 nodes (the "body" that drives the robot)
+├── evolution/              GA core (pure Python, no ROS)
+├── evaluation/             glue between ROS and the GA
+└── utils/                  shared helpers
 ```
 
-#### `controladores/` — as políticas que dirigem o robô
+#### `controllers/` — the policies that drive the robot
 
-Cada arquivo aqui é um **nó ROS2 executável**. Todos subscrevem `/scan`, `/odom_gt`, `/robot_cam/colored_map` e publicam em `/cmd_vel`. A diferença entre eles é **como** decidem o `cmd_vel`.
+Each file here is an **executable ROS2 node**. All of them subscribe to `/scan`, `/odom_gt`, `/robot_cam/colored_map` and publish to `/cmd_vel`. The difference between them is **how** they decide the `cmd_vel`.
 
-| Arquivo | Função |
+| File | Purpose |
 |---|---|
-| `__init__.py` | Vazio. |
-| `controlador_nn.py` | Rede neural. Entrada = features dos sensores. Saída = `[linear.x, angular.z]`. Pesos vêm de um genoma. |
-| `controlador_reativo.py` | Campos potenciais (atrator pra bandeira + repulsor pra obstáculos). Ganhos dos campos vêm de um genoma. |
+| `__init__.py` | Empty. |
+| `nn_controller.py` | Neural network. Input = sensor features. Output = `[linear.x, angular.z]`. Weights come from a genome. |
+| `reactive_controller.py` | Potential fields (attractor to flag + repulsor from obstacles). Field gains come from a genome. |
 
-#### `evolucao/` — o algoritmo genético puro
+#### `evolution/` — the pure genetic algorithm
 
-**Esta pasta não importa nada de ROS.** É Python comum, testável com `pytest` sem Gazebo. Essa separação é o que permite iterar rápido na parte evolutiva — você testa um crossover em segundos, não precisa subir simulação.
+**This folder imports nothing from ROS.** It is plain Python, testable with `pytest` without Gazebo. That separation is what lets you iterate fast on the evolutionary part — you test a crossover in seconds, no need to bring up simulation.
 
-| Arquivo | Função |
+| File | Purpose |
 |---|---|
-| `__init__.py` | Vazio. |
-| `genoma.py` | Classe `Genoma` — representação (vetor de floats? grafo NEAT? árvore?) e serialização (`to_bytes`, `from_bytes`). |
-| `populacao.py` | Classe `Populacao` — seleção (torneio/ranking/roleta), crossover, mutação. |
-| `algoritmo.py` | `rodar_ga(populacao, avaliador, n_geracoes)` — laço principal do GA: avalia → seleciona → cruza → muta → repete. |
-| `fitness.py` | `fitness_ctf(...)` — recebe dados do episódio e devolve um score. Define o que é "bom" (pegou bandeira? tempo? distância? colisões?). |
+| `__init__.py` | Empty. |
+| `genome.py` | `Genome` class — representation (float vector? NEAT graph? tree?) and serialization (`to_bytes`, `from_bytes`). |
+| `population.py` | `Population` class — selection (tournament/ranking/roulette), crossover, mutation. |
+| `algorithm.py` | `run_ga(population, evaluator, n_generations)` — main GA loop: evaluate → select → crossover → mutate → repeat. |
+| `fitness.py` | `ctf_fitness(...)` — takes episode data and returns a score. Defines what "good" means (got flag? time? distance? collisions?). |
 
-#### `avaliacao/` — onde ROS e GA conversam
+#### `evaluation/` — where ROS and the GA talk to each other
 
-| Arquivo | Função |
+| File | Purpose |
 |---|---|
-| `__init__.py` | Vazio. |
-| `episodio.py` | `rodar_episodio(controlador, genoma, tempo_max)` — carrega o genoma no controlador, deixa rodar por N segundos de sim_time, coleta métricas. |
-| `reset_mundo.py` | `resetar_robo(pose)` — chama o serviço Ignition pra teletransportar o robô de volta à posição inicial. Sem reset rápido, treinar é inviável. |
-| `orquestrador.py` | Nó ROS2 executável (registrado como `ros2 run ... orquestrador`). Carrega params do YAML, instancia `Populacao`, roda as gerações via `rodar_ga`, salva o campeão em `genomas/`. |
+| `__init__.py` | Empty. |
+| `episode.py` | `run_episode(controller, genome, max_time)` — loads the genome into the controller, lets it run for N seconds of sim_time, collects metrics. |
+| `world_reset.py` | `reset_robot(pose)` — calls the Ignition service to teleport the robot back to its initial pose. Without fast reset, training is infeasible. |
+| `orchestrator.py` | Executable ROS2 node (registered as `ros2 run ... orchestrator`). Loads params from YAML, instantiates `Population`, runs the generations via `run_ga`, saves the champion to `genomes/`. |
 
-#### `utils/` — helpers compartilhados
+#### `utils/` — shared helpers
 
-| Arquivo | Função |
+| File | Purpose |
 |---|---|
-| `__init__.py` | Vazio. |
-| `sensores.py` | Converte mensagens de sensor em features normalizadas. `scan_to_features` faz bins angulares do lidar; `imagem_para_mascara_bandeira` detecta blob da cor da bandeira na câmera segmentada. |
-| `logger.py` | `LoggerCSV` — registra `(geração, melhor, média)` em CSV pra plotar depois. |
+| `__init__.py` | Empty. |
+| `sensors.py` | Turns sensor messages into normalized features. `scan_to_features` bins the lidar angularly; `image_to_flag_mask` detects the flag color blob in the segmented camera image. |
+| `logger.py` | `CSVLogger` — records `(generation, best, mean)` to CSV for later plotting. |
 
-### `genomas/` — artefatos de treino
+### `genomes/` — training artifacts
 
-Aqui ficam os genomas salvos pelo `orquestrador` durante o treino. O `.gitkeep` mantém a pasta no git mesmo vazia. O `.gitignore` exclui todo o conteúdo **exceto** `melhor.npy` — você commita só o campeão (genomas intermediários podem ser muitos MB/GB depois de várias gerações).
+Here is where the `orchestrator` saves genomes during training. The `.gitkeep` keeps the folder in git even when empty. The `.gitignore` excludes everything in it **except** `best.npy` — you commit only the champion (intermediate genomes can total many MB/GB after several generations).
 
-### `scripts/` — ferramentas fora do ROS
+### `scripts/` — tools outside ROS
 
-Scripts standalone que rodam com `python3 scripts/<nome>.py`. Não viram comandos `ros2 run`.
+Standalone scripts that run with `python3 scripts/<name>.py`. They do not become `ros2 run` commands.
 
-| Arquivo | Função |
+| File | Purpose |
 |---|---|
-| `plotar_fitness.py` | Lê CSV do `LoggerCSV` e plota a curva de evolução com matplotlib. |
+| `plot_fitness.py` | Reads the `CSVLogger` CSV and plots the evolution curve with matplotlib. |
 
-### `test/` — testes unitários
+### `test/` — unit tests
 
-Roda com `colcon test --packages-select evolutionary_controller_ros` ou direto com `pytest`.
+Run with `colcon test --packages-select evolutionary_controller_ros` or directly with `pytest`.
 
-| Arquivo | Função |
+| File | Purpose |
 |---|---|
-| `test_genoma.py` | Placeholder. Testes da classe `Genoma` virão aqui. |
+| `test_genome.py` | Placeholder. Tests for the `Genome` class will live here. |
 
-## Fluxo de dados
+## Data flow
 
 ```
-Durante execução normal (controlador rodando no mundo):
+During normal execution (controller running in the world):
 
-  Gazebo (prm_2026)                     Este pacote
-  ─────────────────                     ───────────
-  /scan              ───────→  controlador ───→  /cmd_vel
-  /imu               ───────→  controlador      (publicado 10 Hz)
-  /odom_gt           ───────→  controlador
-  /robot_cam/        ───────→  controlador
+  Gazebo (prm_2026)                     This package
+  ─────────────────                     ────────────
+  /scan              ───────→  controller ──→  /cmd_vel
+  /imu               ───────→  controller     (published at 10 Hz)
+  /odom_gt           ───────→  controller
+  /robot_cam/        ───────→  controller
     colored_map
-                                                 → /gripper_controller/commands
-                                                   (quando for pegar bandeira)
+                                               → /gripper_controller/commands
+                                                 (when grabbing the flag)
 
-Durante treinamento:
+During training:
 
-  orquestrador
+  orchestrator
      │
-     │ cria
+     │ creates
      ▼
-  populacao ──→ genoma ──→ controlador (carrega os pesos)
+  population ──→ genome ──→ controller (loads the weights)
                               │
-                              │ executa 1 episódio
+                              │ runs 1 episode
                               ▼
-                         (robô corre no Gazebo por N segundos)
+                         (robot runs in Gazebo for N seconds)
                               │
-                              │ ao fim do episódio
+                              │ at episode end
                               ▼
-  orquestrador ←── fitness ←── dados coletados
+  orchestrator ←── fitness ←── collected data
      │
-     │ usa o fitness pra selecionar/cruzar/mutar
+     │ uses the fitness to select/crossover/mutate
      ▼
-  nova geração ...
+  new generation ...
 
-  Entre episódios:
-  orquestrador ──→ reset_mundo ──→ ign service (teleporta robô pra pose inicial)
+  Between episodes:
+  orchestrator ──→ world_reset ──→ ign service (teleports robot to initial pose)
 ```
 
-## O que está no git
+## What is in git
 
-**Tudo rastreado**, exceto o que o `.gitignore` exclui:
+**Everything tracked**, except what `.gitignore` excludes:
 
-| Padrão | Por que excluir |
+| Pattern | Why exclude |
 |---|---|
-| `__pycache__/`, `*.py[cod]`, `*.egg-info/` | Bytecode Python — regenerável. |
-| `.pytest_cache/` | Cache do pytest — regenerável. |
-| `build/`, `install/`, `log/` | Artefatos do colcon (caso você rode `colcon build` a partir da pasta do pacote por engano). Nunca commitar — são regenerados. |
-| `.vscode/`, `.idea/`, `*.swp` | Arquivos de editor — pessoais, não pertencem ao repo. |
-| `logs/` | Logs CSV de treino — podem crescer muito. |
-| `genomas/*` exceto `.gitkeep` e `melhor.npy` | Genomas intermediários. Commita só o campeão. |
+| `__pycache__/`, `*.py[cod]`, `*.egg-info/` | Python bytecode — regenerable. |
+| `.pytest_cache/` | pytest cache — regenerable. |
+| `build/`, `install/`, `log/` | colcon artifacts (in case you run `colcon build` from the package folder by mistake). Never commit — they are regenerated. |
+| `.vscode/`, `.idea/`, `*.swp` | Editor files — personal, do not belong in the repo. |
+| `logs/` | Training CSV logs — can grow a lot. |
+| `genomes/*` except `.gitkeep` and `best.npy` | Intermediate genomes. Commit only the champion. |
 
 **Remote:** `git@github.com:LVinaud/evolutionary_controller_ros.git` — branch `main`.
 
-**Primeiro commit:** `0ef606f` — scaffold inicial (os 31 arquivos descritos acima).
+**First commit:** `0ef606f` — initial scaffold.
 
-Pra ver o que está rastreado agora: `git ls-files` dentro da pasta do pacote.
+To see what is tracked right now: `git ls-files` inside the package folder.
 
-## Convenções deste pacote
+## Package conventions
 
-- Código em português (nomes de variáveis, comentários, docstrings) — reflete a disciplina.
-- Cada executável ROS2 é um arquivo `.py` único com uma classe + função `main()`.
-- `evolucao/` é puro Python, sem `import rclpy` — testável sem simulador.
-- `controladores/` e `avaliacao/` falam ROS.
-- Genomas são serializáveis em `.npy` (numpy) ou bytes brutos via `to_bytes`/`from_bytes`.
-- Stubs estão marcados com `raise NotImplementedError` (parte evolutiva) ou comentário `# TODO:` (controladores que precisam rodar sem crashar).
+- Code in English (variable names, comments, docstrings).
+- Each ROS2 executable is a single `.py` file with one class + a `main()` function.
+- `evolution/` is pure Python, no `import rclpy` — testable without a simulator.
+- `controllers/` and `evaluation/` speak ROS.
+- Genomes are serializable to `.npy` (numpy) or raw bytes via `to_bytes`/`from_bytes`.
+- Stubs are marked with `raise NotImplementedError` (evolutionary part) or `# TODO:` (controllers that need to run without crashing).
 
-## Licença
+## License
 
-MIT — ver [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

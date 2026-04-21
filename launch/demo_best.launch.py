@@ -5,18 +5,18 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    genoma_arg = DeclareLaunchArgument(
-        'genoma',
-        default_value='genomas/melhor.npy',
-        description='Caminho do arquivo de genoma a carregar no controlador',
+    genome_arg = DeclareLaunchArgument(
+        'genome',
+        default_value='genomes/best.npy',
+        description='Path to the genome file to load into the controller',
     )
     return LaunchDescription([
-        genoma_arg,
+        genome_arg,
         Node(
             package='evolutionary_controller_ros',
-            executable='controlador_nn',
-            name='controlador_demo',
+            executable='nn_controller',
+            name='demo_controller',
             output='screen',
-            parameters=[{'genoma_path': LaunchConfiguration('genoma')}],
+            parameters=[{'genome_path': LaunchConfiguration('genome')}],
         ),
     ])
