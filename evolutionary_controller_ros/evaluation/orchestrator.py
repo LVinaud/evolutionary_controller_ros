@@ -13,6 +13,7 @@ service (see `evaluation/episode.py`).
 import json
 import os
 import random
+import time
 from pathlib import Path
 
 import rclpy
@@ -32,6 +33,19 @@ _DEFAULT_MODEL_NAMES = {
     "deploy_zone":  "flag_deploy_zone",
 }
 
+# Non-static world models that drift under robot contact (the professor's SDF
+# does not mark them `<static>true</static>`). We snapshot their poses on
+# startup and teleport them back at every episode reset.
+_DRIFTY_MODELS = (
+    "paredes_arena",
+    "obstaculos_azul",
+    "obstaculos_vermelho",
+    "center_zone",
+    "blue_base",
+    "red_base",
+    "flag_deploy_zone",
+)
+
 
 class Orchestrator(Node):
     def __init__(self):
@@ -44,6 +58,8 @@ class Orchestrator(Node):
         self.declare_parameter("pop_size", 20)
         self.declare_parameter("n_generations", 30)
         self.declare_parameter("init_max_depth", 5)
+        self.declare_parameter("init_op_prob", 0.7)
+        self.declare_parameter("init_erc_prob", 0.3)
         self.declare_parameter("crossover_rate", 0.9)
         self.declare_parameter("elite_k", 1)
         self.declare_parameter("seed", 42)
@@ -53,6 +69,7 @@ class Orchestrator(Node):
         self.declare_parameter("collision_debounce_s", 0.5)
         self.declare_parameter("deploy_zone_radius_m", 1.0)
         self.declare_parameter("exploration_cell_size_m", 0.5)
+        self.declare_parameter("robot_spawn_z_m", 0.3)
         self.declare_parameter(
             "scenarios_json",
             json.dumps([
@@ -61,6 +78,7 @@ class Orchestrator(Node):
             ]),
         )
         self.declare_parameter("output_dir", "genomes")
+        self.declare_parameter("real_time_factor", 1.0)
 
     # ----------------------------------------------------------------------
 
@@ -68,6 +86,14 @@ class Orchestrator(Node):
         world_name = self.get_parameter("world_name").value
         team = self.get_parameter("our_team").value
         rng = random.Random(int(self.get_parameter("seed").value))
+
+        rtf = float(self.get_parameter("real_time_factor").value)
+        if rtf != 1.0:
+            self.get_logger().info(f"setting real_time_factor={rtf} on world '{world_name}'")
+            try:
+                wr.set_physics(world_name, real_time_factor=rtf)
+            except RuntimeError as e:
+                self.get_logger().warn(f"set_physics failed, continuing at default RTF: {e}")
 
         self.get_logger().info(
             f"querying world '{world_name}' for target poses...")
@@ -83,16 +109,35 @@ class Orchestrator(Node):
             f"deploy={world_cfg.deploy_zone_pose}")
         self.get_logger().info(f"scenarios: {[s.name for s in scenarios]}")
 
+        pop_size = int(self.get_parameter("pop_size").value)
+        out_dir = Path(self.get_parameter("output_dir").value)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        counter = {"gen": 0, "ind": 0, "t_gen_start": time.monotonic()}
+
         def evaluator(tree: dict) -> list:
+            counter["ind"] += 1
+            tree_json = g.to_json(tree)
+            self.get_logger().info(
+                f"  ind {counter['ind']}/{pop_size} size={g.size(tree)} "
+                f"depth={g.depth(tree)}")
+            self.get_logger().info(f"    genome: {tree_json}")
             return _score_tree(self, tree, scenarios, world_cfg,
                                self.get_parameter("exploration_cell_size_m").value)
 
         def on_gen(gen, pop, case_matrix, best_idx):
+            elapsed = time.monotonic() - counter["t_gen_start"]
+            counter["gen"] = gen + 1
+            counter["ind"] = 0
+            counter["t_gen_start"] = time.monotonic()
             means = [sum(r) / len(r) for r in case_matrix]
             self.get_logger().info(
-                f"gen {gen}: best_mean={means[best_idx]:.3f} "
+                f"=== gen {gen} DONE in {elapsed:.1f}s: "
+                f"best_mean={means[best_idx]:.3f} "
                 f"avg_mean={sum(means) / len(means):.3f} "
-                f"best_size={g.size(pop[best_idx])}")
+                f"best_size={g.size(pop[best_idx])} ===")
+            # Checkpoint: save champion of this generation (survives crashes).
+            (out_dir / f"gen_{gen:03d}_best.json").write_text(g.to_json(pop[best_idx]))
+            (out_dir / "best.json").write_text(g.to_json(pop[best_idx]))
 
         best = alg.run_ga(
             rng,
@@ -100,16 +145,15 @@ class Orchestrator(Node):
             pop_size=int(self.get_parameter("pop_size").value),
             n_generations=int(self.get_parameter("n_generations").value),
             init_max_depth=int(self.get_parameter("init_max_depth").value),
+            init_op_prob=float(self.get_parameter("init_op_prob").value),
+            init_erc_prob=float(self.get_parameter("init_erc_prob").value),
             crossover_rate=float(self.get_parameter("crossover_rate").value),
             elite_k=int(self.get_parameter("elite_k").value),
             on_generation=on_gen,
         )
 
-        out_dir = Path(self.get_parameter("output_dir").value)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        best_path = out_dir / "best.json"
-        best_path.write_text(g.to_json(best))
-        self.get_logger().info(f"saved champion to {best_path}")
+        (out_dir / "best.json").write_text(g.to_json(best))
+        self.get_logger().info(f"saved final champion to {out_dir / 'best.json'}")
 
     # ----------------------------------------------------------------------
 
@@ -146,6 +190,11 @@ class Orchestrator(Node):
                 self.get_parameter("deploy_zone_radius_m").value),
             exploration_cell_size_m=float(
                 self.get_parameter("exploration_cell_size_m").value),
+            robot_spawn_z_m=float(
+                self.get_parameter("robot_spawn_z_m").value),
+            static_models_to_reset=tuple(
+                (name, *poses[name]) for name in _DRIFTY_MODELS if name in poses
+            ),
         )
 
     def _build_scenarios(self, enemy_flag_initial: tuple) -> list:
@@ -176,6 +225,13 @@ def _score_tree(node, tree, scenarios, world_cfg, cell_size_m) -> list:
         history = ep.run_episode(node, tree, sc, world_cfg)
         sc_cases = fit.compute_fitness_cases(
             history, exploration_cell_size_m=cell_size_m)
+        node.get_logger().info(
+            f"    scenario '{sc.name}': "
+            f"held={history['holding_any_tick']} "
+            f"delivered={history['delivered']} "
+            f"collisions={history['collision_events']} "
+            f"elapsed={history['elapsed_s']:.1f}s "
+            f"cells={len(set((int(x/cell_size_m), int(y/cell_size_m)) for x,y in history['positions_xy']))}")
         cases.extend(sc_cases)
     return cases
 

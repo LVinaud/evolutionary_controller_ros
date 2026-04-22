@@ -66,6 +66,11 @@ class WorldConfig:
     collision_debounce_s: float = 0.5
     deploy_zone_radius_m: float = 1.0
     exploration_cell_size_m: float = 0.5
+    robot_spawn_z_m: float = 0.3     # drop from this height so wheels settle on ground
+    # (model_name, x, y, yaw) of non-static world models that drift during
+    # episodes (walls that aren't `<static>true</static>`, obstacle groups,
+    # zone markers). Teleported back to their original pose on every reset.
+    static_models_to_reset: tuple = ()
 
 
 def run_episode(
@@ -178,10 +183,15 @@ class _EpisodeCollector:
         self._call_set_parameters(params)
         self._call_reset()
 
+        for model_name, mx, my, myaw in self.world.static_models_to_reset:
+            wr.set_model_pose(self.world.world_name, model_name,
+                              mx, my, myaw)
+
         rx, ry, ryaw = self.scenario.robot_start
         wr.set_model_pose(self.world.world_name,
                           self.world.robot_model_name,
-                          rx, ry, ryaw)
+                          rx, ry, ryaw,
+                          z=self.world.robot_spawn_z_m)
         flag_x0, flag_y0 = self.scenario.enemy_flag_initial
         wr.set_model_pose(self.world.world_name,
                           self.world.enemy_flag_model_name,

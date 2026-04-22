@@ -22,8 +22,13 @@ orchestrator:
     pop_size: 20
     n_generations: 30
     init_max_depth: 5
-    crossover_rate: 0.9         # Koza: filho é crossover OU mutação
-    elite_k: 1                  # elitismo K=1; função preparada para K>1
+    # grow init: prob de um nó virar operador (vs terminal direto). Mais
+    # alto = pop inicial com árvores maiores. 0.5 é Koza default; 0.7
+    # reduz drasticamente o número de árvores triviais `size=1` na gen 0.
+    init_op_prob: 0.7
+    init_erc_prob: 0.3
+    crossover_rate: 0.9      # Koza: filho é crossover OU mutação
+    elite_k: 1               # elitismo K=1; função preparada para K>1
     seed: 42
 
     # --- Episódio ---
@@ -44,6 +49,11 @@ orchestrator:
     # Grid 0.5m para contar células distintas visitadas (métrica 'espaco_explorado').
     exploration_cell_size_m: 0.5
 
+    # --- Spawn ---
+    # Robô é teleportado (x, y, z=spawn_height) e cai livremente até pousar.
+    # z=0 enterra no chão → colisão prende as rodas. 0.3m é seguro.
+    robot_spawn_z_m: 0.3
+
     # --- Cenários ---
     # Lista JSON de poses iniciais do robô. Cada cenário gera 7 casos
     # fitness; o vetor final tem 7 × len(scenarios) entradas.
@@ -53,6 +63,12 @@ orchestrator:
         {"name": "from_base",     "x": 6.0, "y": 0.0, "yaw":  3.14159},
         {"name": "north_center",  "x": 0.0, "y": 3.0, "yaw": -1.5708}
       ]
+
+    # --- Aceleração da simulação ---
+    # 1.0 = tempo-real. Em WSL com software rendering o Gazebo Fortress fica
+    # CPU-bound a ~50%, então pedir >1 não faz efeito (é clampado).
+    # Num host com GPU decente, tentar 3-5. Sem efeito se o host não aguenta.
+    real_time_factor: 1.0
 
     # --- Saída ---
     output_dir: "genomes"        # onde salvar best.json

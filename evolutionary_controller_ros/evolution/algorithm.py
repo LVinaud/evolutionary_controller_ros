@@ -130,6 +130,8 @@ def run_ga(
     pop_size: int = 20,
     n_generations: int = 30,
     init_max_depth: int = 5,
+    init_op_prob: float = 0.5,
+    init_erc_prob: float = 0.3,
     crossover_rate: float = 0.9,
     mutation_rates: dict | None = None,
     elite_k: int = 1,
@@ -147,7 +149,8 @@ def run_ga(
     callback invoked once per generation after evaluation; useful for
     logging and checkpointing without coupling this function to I/O.
     """
-    pop = p.init_population(rng, pop_size, init_max_depth)
+    pop = p.init_population(rng, pop_size, init_max_depth,
+                            op_prob=init_op_prob, erc_prob=init_erc_prob)
     best_tree = None
     best_mean = -float("inf")
 

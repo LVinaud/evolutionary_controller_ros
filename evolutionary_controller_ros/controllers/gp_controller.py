@@ -83,10 +83,14 @@ class GPController(Node):
 
         self.create_service(Empty, "/gp_controller/reset", self._on_reset)
 
-        self.create_subscription(LaserScan, "/scan", self._on_scan, 10)
-        self.create_subscription(Odometry, "/odom", self._on_odom, 10)
-        self.create_subscription(Image, "/robot_cam/labels_map",
-                                 self._on_labels, 10)
+        scan_topic = self.get_parameter("scan_topic").value
+        odom_topic = self.get_parameter("odom_topic").value
+        labels_topic = self.get_parameter("labels_topic").value
+        self.get_logger().info(
+            f"subs: scan={scan_topic} odom={odom_topic} labels={labels_topic}")
+        self.create_subscription(LaserScan, scan_topic, self._on_scan, 10)
+        self.create_subscription(Odometry, odom_topic, self._on_odom, 10)
+        self.create_subscription(Image, labels_topic, self._on_labels, 10)
 
         self._bridge = CvBridge() if CvBridge is not None else None
         self._scan = None
@@ -100,6 +104,7 @@ class GPController(Node):
         self._action_duration_ns = 0
         self._last_twist = Twist()
         self._holding_flag = False
+        self._last_missing_log_ns = 0
         self._publish_holding(False)
 
         tick_hz = self.get_parameter("tick_hz").value
@@ -127,9 +132,18 @@ class GPController(Node):
         self.declare_parameter("v_re",     -0.3)
         self.declare_parameter("w_gira",    0.8)
         self.declare_parameter("grab_reach_m", 0.3)
-        self.declare_parameter("gripper_open",  [0.0, 0.0, 0.0])
-        self.declare_parameter("gripper_close", [0.02, -0.02, 0.02])
+        # Joint order per prm_2026/config/controller_config.yaml:
+        #   [gripper_extension, right_gripper_joint, left_gripper_joint].
+        # Confirmed empirically that (0.02, -0.02, 0.02) OPENS the claw.
+        self.declare_parameter("gripper_open",  [0.02, -0.02, 0.02])
+        self.declare_parameter("gripper_close", [0.0,  0.0,  0.0])
         self.declare_parameter("tick_hz", 10.0)
+        # Wheel odometry (drift-infested). `prm_2026` publishes under
+        # /diff_drive_base_controller/odom because the /odom relay is
+        # disabled in carrega_robo.launch.py. Overridable for other worlds.
+        self.declare_parameter("odom_topic",   "/diff_drive_base_controller/odom")
+        self.declare_parameter("scan_topic",   "/scan")
+        self.declare_parameter("labels_topic", "/robot_cam/labels_map")
 
     def _on_params_changed(self, params):
         from rcl_interfaces.msg import SetParametersResult
@@ -193,6 +207,7 @@ class GPController(Node):
 
     def _tick(self):
         if self._genome is None or self._odom is None or self._scan is None:
+            self._log_missing_inputs()
             return
 
         now = self.get_clock().now().nanoseconds
@@ -209,6 +224,17 @@ class GPController(Node):
         action, dur_ms = g.evaluate(self._genome, feats)
         self._begin_action(action, dur_ms, feats, now)
 
+    def _log_missing_inputs(self):
+        now = self.get_clock().now().nanoseconds
+        if now - self._last_missing_log_ns < 2_000_000_000:
+            return
+        self._last_missing_log_ns = now
+        missing = []
+        if self._genome is None: missing.append("genome")
+        if self._odom is None:   missing.append("/odom")
+        if self._scan is None:   missing.append("/scan")
+        self.get_logger().warn(f"idle — waiting for: {', '.join(missing)}")
+
     def _begin_action(self, action, dur_ms, feats, now_ns):
         twist, gripper_cmd = self._action_to_commands(action, feats)
         self._last_twist = twist
@@ -218,6 +244,9 @@ class GPController(Node):
         self.cmd_pub.publish(twist)
         if gripper_cmd is not None:
             self.gripper_pub.publish(gripper_cmd)
+        self.get_logger().info(
+            f"action={action} dur={dur_ms}ms "
+            f"v=({twist.linear.x:+.2f}, {twist.angular.z:+.2f})")
 
     def _action_to_commands(self, action, feats):
         v_f = float(self.get_parameter("v_frente").value)
