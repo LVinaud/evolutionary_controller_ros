@@ -49,11 +49,11 @@ def test_crossover_does_not_mutate_parents():
 def test_crossover_swaps_same_typed_subtree():
     # Force a predictable scenario: both parents have Bool subtrees.
     a = {"op": "IF",
-         "cond": {"term": "segurando_bandeira"},
+         "cond": {"term": "alvo_atras"},
          "then": {"leaf": "FRENTE", "dur_ms": 200},
-         "else": {"leaf": "PARAR", "dur_ms": 100}}
+         "else": {"leaf": "RE", "dur_ms": 100}}
     b = {"op": "IF",
-         "cond": {"term": "na_base_propria"},
+         "cond": {"term": "obstaculo_frente"},
          "then": {"leaf": "RE", "dur_ms": 300},
          "else": {"leaf": "GIRA_ESQ", "dur_ms": 400}}
     rng = random.Random(3)
@@ -119,10 +119,10 @@ def test_mutate_point_swaps_binary_op():
     # Only candidate is the AND root.
     tree = {"op": "IF",
             "cond": {"op": "AND",
-                     "a": {"term": "na_base_propria"},
-                     "b": {"term": "segurando_bandeira"}},
+                     "a": {"term": "obstaculo_frente"},
+                     "b": {"term": "alvo_atras"}},
             "then": {"leaf": "FRENTE", "dur_ms": 200},
-            "else": {"leaf": "PARAR", "dur_ms": 100}}
+            "else": {"leaf": "RE", "dur_ms": 100}}
     # Use a forced choice: only op swap possible is AND (IF is not in _POINT_OP_SWAPS),
     # named terminals can also be swapped. Run many seeds to ensure validity.
     for seed in range(20):
@@ -132,31 +132,31 @@ def test_mutate_point_swaps_binary_op():
         g.validate(new)
 
 
-def test_mutate_point_and_or_symmetry():
-    tree = {"op": "AND",
-            "a": {"term": "na_base_propria"},
-            "b": {"term": "segurando_bandeira"}}
+def test_mutate_point_lt_gt_symmetry():
+    tree = {"op": "LT",
+            "a": {"term": "dist_alvo"},
+            "b": {"erc": 0.5}}
     # Force: iterate seeds until we pick the "op" candidate (root).
     for seed in range(100):
         rng = random.Random(seed)
         new = p._mutate_point(rng, tree)
-        if new is not None and "op" in new and new["op"] in ("AND", "OR"):
+        if new is not None and "op" in new and new["op"] in ("LT", "GT"):
             # If the op itself got swapped, it must be the other one.
             if new["op"] != tree["op"]:
-                assert new["op"] == "OR"
+                assert new["op"] == "GT"
                 return
     # At least one swap must have happened in 100 tries.
     raise AssertionError("no op swap observed in 100 seeds")
 
 
 def test_mutate_point_terminal_swap_preserves_type():
-    tree = {"term": "na_base_propria"}  # Bool
+    tree = {"term": "obstaculo_frente"}  # Bool
     for seed in range(20):
         rng = random.Random(seed)
         new = p._mutate_point(rng, tree)
         assert new is not None
         assert new["term"] in g.BOOL_TERMINALS
-        assert new["term"] != "na_base_propria"
+        assert new["term"] != "obstaculo_frente"
 
 
 def test_mutate_point_returns_none_when_no_candidates():
@@ -167,7 +167,7 @@ def test_mutate_point_returns_none_when_no_candidates():
                              "a": {"erc": 0.1},
                              "b": {"erc": 0.2}}},
             "then": {"leaf": "FRENTE", "dur_ms": 200},
-            "else": {"leaf": "PARAR", "dur_ms": 100}}
+            "else": {"leaf": "RE", "dur_ms": 100}}
     # Wait — LT is in _POINT_OP_SWAPS. Use a tree with only ops that aren't swappable (NOT, IF).
     tree2 = {"op": "IF",
              "cond": {"op": "NOT",
@@ -177,7 +177,7 @@ def test_mutate_point_returns_none_when_no_candidates():
                                               "arg": {"op": "NOT",
                                                       "arg": {"erc": 0.1}}}}}},
              "then": {"leaf": "FRENTE", "dur_ms": 200},
-             "else": {"leaf": "PARAR", "dur_ms": 100}}
+             "else": {"leaf": "RE", "dur_ms": 100}}
     # Wait: NOT expects Bool arg, ERC is Float. Build valid no-candidate tree:
     # only IF and NOT (non-swappable), with ERC/leaf only... need Bool for NOT.
     # Actually impossible to build a purely Bool tree without any term/LT/GT.
@@ -204,7 +204,7 @@ def test_mutate_leaf_action_changes_action_keeps_duration():
 
 
 def test_mutate_leaf_action_none_when_no_leaves():
-    tree = {"term": "segurando_bandeira"}
+    tree = {"term": "alvo_atras"}
     assert p._mutate_leaf_action(random.Random(0), tree) is None
 
 
@@ -232,7 +232,7 @@ def test_mutate_leaf_duration_clips_to_bounds():
 
 
 def test_mutate_leaf_duration_none_when_no_leaves():
-    tree = {"term": "segurando_bandeira"}
+    tree = {"term": "alvo_atras"}
     assert p._mutate_leaf_duration(random.Random(0), tree, 100.0) is None
 
 
@@ -246,7 +246,7 @@ def test_mutate_erc_clips_to_range():
                      "a": {"term": "dist_frente"},
                      "b": {"erc": 0.5}},
             "then": {"leaf": "FRENTE", "dur_ms": 200},
-            "else": {"leaf": "PARAR", "dur_ms": 100}}
+            "else": {"leaf": "RE", "dur_ms": 100}}
     for seed in range(50):
         rng = random.Random(seed)
         new = p._mutate_erc(rng, tree, sigma=10.0)

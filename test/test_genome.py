@@ -11,17 +11,17 @@ from evolutionary_controller_ros.evolution import genome as g
 # --------------------------------------------------------------------------
 
 def test_node_type_for_each_kind():
-    assert g.node_type({"term": "bandeira_inimiga_visivel"}) == "Bool"
+    assert g.node_type({"term": "alvo_proximo"}) == "Bool"
     assert g.node_type({"term": "dist_frente"}) == "Float"
     assert g.node_type({"erc": 0.1}) == "Float"
     assert g.node_type({"leaf": "FRENTE", "dur_ms": 500}) == "Action"
     assert g.node_type({"op": "AND",
-                        "a": {"term": "na_base_propria"},
-                        "b": {"term": "na_zona_deploy"}}) == "Bool"
+                        "a": {"term": "obstaculo_frente"},
+                        "b": {"term": "obstaculo_esq"}}) == "Bool"
     assert g.node_type({"op": "IF",
-                        "cond": {"term": "segurando_bandeira"},
+                        "cond": {"term": "alvo_atras"},
                         "then": {"leaf": "FRENTE", "dur_ms": 500},
-                        "else": {"leaf": "PARAR", "dur_ms": 200}}) == "Action"
+                        "else": {"leaf": "RE", "dur_ms": 200}}) == "Action"
 
 
 def test_node_type_rejects_unknown_terminal():
@@ -34,15 +34,15 @@ def test_node_type_rejects_unknown_terminal():
 # --------------------------------------------------------------------------
 
 def test_size_and_depth_of_leaf():
-    assert g.size({"leaf": "PARAR", "dur_ms": 100}) == 1
-    assert g.depth({"leaf": "PARAR", "dur_ms": 100}) == 1
+    assert g.size({"leaf": "RE", "dur_ms": 100}) == 1
+    assert g.depth({"leaf": "RE", "dur_ms": 100}) == 1
 
 
 def test_size_and_depth_of_if_tree():
     tree = {"op": "IF",
-            "cond": {"term": "segurando_bandeira"},
+            "cond": {"term": "alvo_atras"},
             "then": {"leaf": "FRENTE", "dur_ms": 500},
-            "else": {"leaf": "PARAR", "dur_ms": 200}}
+            "else": {"leaf": "RE", "dur_ms": 200}}
     assert g.size(tree) == 4
     assert g.depth(tree) == 2
 
@@ -53,9 +53,9 @@ def test_size_and_depth_of_if_tree():
 
 def test_iter_subtrees_yields_all_with_paths():
     tree = {"op": "IF",
-            "cond": {"term": "segurando_bandeira"},
+            "cond": {"term": "alvo_atras"},
             "then": {"leaf": "FRENTE", "dur_ms": 500},
-            "else": {"leaf": "PARAR", "dur_ms": 200}}
+            "else": {"leaf": "RE", "dur_ms": 200}}
     items = list(g.iter_subtrees(tree))
     paths = [p for p, _, _ in items]
     types = [t for _, _, t in items]
@@ -65,19 +65,19 @@ def test_iter_subtrees_yields_all_with_paths():
 
 def test_get_at_round_trips_paths():
     tree = {"op": "IF",
-            "cond": {"term": "segurando_bandeira"},
+            "cond": {"term": "alvo_atras"},
             "then": {"leaf": "FRENTE", "dur_ms": 500},
-            "else": {"leaf": "PARAR", "dur_ms": 200}}
+            "else": {"leaf": "RE", "dur_ms": 200}}
     assert g.get_at(tree, ()) is tree
-    assert g.get_at(tree, ("cond",))["term"] == "segurando_bandeira"
+    assert g.get_at(tree, ("cond",))["term"] == "alvo_atras"
     assert g.get_at(tree, ("then",))["leaf"] == "FRENTE"
 
 
 def test_set_at_does_not_mutate_original():
     tree = {"op": "IF",
-            "cond": {"term": "segurando_bandeira"},
+            "cond": {"term": "alvo_atras"},
             "then": {"leaf": "FRENTE", "dur_ms": 500},
-            "else": {"leaf": "PARAR", "dur_ms": 200}}
+            "else": {"leaf": "RE", "dur_ms": 200}}
     new = g.set_at(tree, ("then",), {"leaf": "GIRA_ESQ", "dur_ms": 300})
     assert new["then"]["leaf"] == "GIRA_ESQ"
     assert tree["then"]["leaf"] == "FRENTE"
@@ -85,8 +85,8 @@ def test_set_at_does_not_mutate_original():
 
 def test_set_at_root_returns_new_subtree():
     tree = {"leaf": "FRENTE", "dur_ms": 500}
-    new = g.set_at(tree, (), {"leaf": "PARAR", "dur_ms": 100})
-    assert new == {"leaf": "PARAR", "dur_ms": 100}
+    new = g.set_at(tree, (), {"leaf": "RE", "dur_ms": 100})
+    assert new == {"leaf": "RE", "dur_ms": 100}
 
 
 # --------------------------------------------------------------------------
@@ -142,14 +142,14 @@ def test_validate_rejects_type_mismatch_in_op_args():
     # LT expects two Floats — giving a Bool should fail.
     with pytest.raises(ValueError):
         g.validate({"op": "LT",
-                    "a": {"term": "segurando_bandeira"},
+                    "a": {"term": "alvo_atras"},
                     "b": {"term": "dist_frente"}})
 
 
 def test_validate_rejects_missing_op_children():
     with pytest.raises(ValueError):
         g.validate({"op": "IF",
-                    "cond": {"term": "segurando_bandeira"},
+                    "cond": {"term": "alvo_atras"},
                     "then": {"leaf": "FRENTE", "dur_ms": 500}})
         # missing "else"
 
@@ -211,11 +211,11 @@ def test_evaluate_leaf_returns_action_and_duration():
 
 def test_evaluate_if_picks_then_vs_else_by_condition():
     tree = {"op": "IF",
-            "cond": {"term": "segurando_bandeira"},
+            "cond": {"term": "alvo_atras"},
             "then": {"leaf": "RE", "dur_ms": 300},
             "else": {"leaf": "FRENTE", "dur_ms": 200}}
-    assert g.evaluate(tree, {"segurando_bandeira": True}) == ("RE", 300)
-    assert g.evaluate(tree, {"segurando_bandeira": False}) == ("FRENTE", 200)
+    assert g.evaluate(tree, {"alvo_atras": True}) == ("RE", 300)
+    assert g.evaluate(tree, {"alvo_atras": False}) == ("FRENTE", 200)
 
 
 def test_evaluate_lt_against_erc():
@@ -232,14 +232,14 @@ def test_evaluate_lt_against_erc():
 def test_evaluate_composed_and_or_not():
     tree = {"op": "IF",
             "cond": {"op": "AND",
-                     "a": {"term": "bandeira_inimiga_visivel"},
+                     "a": {"term": "alvo_proximo"},
                      "b": {"op": "NOT",
-                           "arg": {"term": "segurando_bandeira"}}},
+                           "arg": {"term": "alvo_atras"}}},
             "then": {"leaf": "FRENTE", "dur_ms": 300},
-            "else": {"leaf": "PARAR", "dur_ms": 100}}
+            "else": {"leaf": "RE", "dur_ms": 100}}
     assert g.evaluate(tree,
-                      {"bandeira_inimiga_visivel": True,
-                       "segurando_bandeira": False}) == ("FRENTE", 300)
+                      {"alvo_proximo": True,
+                       "alvo_atras": False}) == ("FRENTE", 300)
     assert g.evaluate(tree,
-                      {"bandeira_inimiga_visivel": True,
-                       "segurando_bandeira": True}) == ("PARAR", 100)
+                      {"alvo_proximo": True,
+                       "alvo_atras": True}) == ("RE", 100)

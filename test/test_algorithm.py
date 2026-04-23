@@ -96,9 +96,9 @@ def test_elite_k_larger_than_pop_returns_all_sorted():
 def test_assemble_appends_negated_size_when_parsimony_on():
     pop = [{"leaf": "FRENTE", "dur_ms": 200},
            {"op": "IF",
-            "cond": {"term": "segurando_bandeira"},
+            "cond": {"term": "alvo_atras"},
             "then": {"leaf": "FRENTE", "dur_ms": 200},
-            "else": {"leaf": "PARAR", "dur_ms": 100}}]
+            "else": {"leaf": "RE", "dur_ms": 100}}]
     base = [[0.5, 1.0], [0.2, 0.8]]
     out = a.assemble_case_matrix(base, pop, include_parsimony=True)
     assert out[0] == [0.5, 1.0, -1.0]   # size 1

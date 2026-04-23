@@ -9,8 +9,8 @@ Mutations
                      same return type (depth budget `subtree_max_depth`).
     point          : swap a single operator or a single named terminal for
                      another of the same type. Candidates are binary ops
-                     (AND<->OR, LT<->GT) and named terminals. No-op if the
-                     tree has no candidate node.
+                     (LT<->GT) and named terminals. No-op if the tree has
+                     no candidate node.
     leaf_action    : pick a random Action leaf; change its action name to a
                      different one; keep duration_ms.
     leaf_duration  : pick a random Action leaf; perturb duration_ms by
@@ -34,9 +34,10 @@ DEFAULT_MUTATION_RATES = {
     "erc_perturb":   0.10,
 }
 
-# Binary ops that can be point-swapped with each other.
+# Binary ops that can be point-swapped with each other. OR was dropped in
+# the go-to-goal refactor, so AND no longer has a same-arity same-type
+# partner to swap with — only LT<->GT remain.
 _POINT_OP_SWAPS = {
-    "AND": "OR", "OR": "AND",
     "LT":  "GT", "GT": "LT",
 }
 

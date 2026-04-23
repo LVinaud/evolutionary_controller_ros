@@ -9,19 +9,19 @@ A genome is a dict representing a strongly-typed decision tree. Types are:
 Function set
     IF(Bool, Action, Action)  -> Action
     AND(Bool, Bool)           -> Bool
-    OR (Bool, Bool)           -> Bool
     NOT(Bool)                 -> Bool
     LT (Float, Float)         -> Bool    # a < b
     GT (Float, Float)         -> Bool    # a > b
 
-Terminal set
-    Bool  : 11 pre-cooked sensor booleans (thresholds live in utils/sensors.py).
-    Float : 11 normalized sensor floats + ERC (Ephemeral Random Constant).
+    (OR removed — redundant with AND+NOT, smaller search space.)
+
+Terminal set (go-to-goal reactive controller — target pose is injected)
+    Bool  : 8 pre-cooked sensor booleans (thresholds live in utils/sensors.py).
+    Float : 8 normalized sensor floats + ERC (Ephemeral Random Constant).
     Action: leaf (action_name, duration_ms in [50, 1000]).
 
 Node dict formats
     {"op": "AND", "a": ..., "b": ...}
-    {"op": "OR",  "a": ..., "b": ...}
     {"op": "NOT", "arg": ...}
     {"op": "LT",  "a": ..., "b": ...}
     {"op": "GT",  "a": ..., "b": ...}
@@ -33,6 +33,11 @@ Node dict formats
 Inspection, random generation, serialization and evaluation live here.
 Genetic operators (crossover, mutation) live in evolution/population.py;
 selection in evolution/algorithm.py.
+
+History: the CTF-specific terminals (bandeira_*, na_base_propria, etc.)
+and the PEGAR/SOLTAR/PARAR actions were removed in the go-to-goal refactor
+— the GP now evolves pure reactive navigation, and the flag-grab / drop
+are driven by a hardcoded state machine in gp_controller's "ctf" mode.
 """
 import json
 import random
@@ -41,28 +46,29 @@ from typing import Iterator
 
 ACTIONS = (
     "FRENTE", "RE", "GIRA_ESQ", "GIRA_DIR",
-    "PARAR", "PEGAR", "SOLTAR",
 )
 
 BOOL_TERMINALS = (
+    # Obstacle cones (thresholded on lidar minimum per direction).
     "obstaculo_frente", "obstaculo_esq", "obstaculo_dir",
-    "bandeira_inimiga_visivel", "bandeira_esquerda",
-    "bandeira_direita", "bandeira_centralizada",
-    "segurando_bandeira", "na_base_propria", "na_zona_deploy",
-    "base_inimiga_visivel",
+    # Target-bearing sectors (cones on the relative angle to the target).
+    "alvo_frente", "alvo_esq", "alvo_dir", "alvo_atras",
+    # Target proximity (distance < alvo_prox_radius from config).
+    "alvo_proximo",
 )
 
 FLOAT_TERMINALS = (
+    # Lidar cone distances (normalized, clipped).
     "dist_frente", "dist_esq", "dist_dir", "dist_atras",
-    "angulo_bandeira_inimiga", "dist_base_propria",
-    "angulo_base_propria", "dist_zona_deploy",
-    "angulo_zona_deploy", "velocidade_linear", "velocidade_angular",
+    # Target (injected via params — generic goal, not flag/base specific).
+    "dist_alvo", "angulo_alvo",
+    # Odometry-reported velocities (drift-free proprioception).
+    "velocidade_linear", "velocidade_angular",
 )
 
 OPS_SPEC = {
     "IF":  (("Bool", "Action", "Action"), "Action"),
     "AND": (("Bool", "Bool"), "Bool"),
-    "OR":  (("Bool", "Bool"), "Bool"),
     "NOT": (("Bool",), "Bool"),
     "LT":  (("Float", "Float"), "Bool"),
     "GT":  (("Float", "Float"), "Bool"),
@@ -71,7 +77,6 @@ OPS_SPEC = {
 OP_CHILD_KEYS = {
     "IF":  ("cond", "then", "else"),
     "AND": ("a", "b"),
-    "OR":  ("a", "b"),
     "NOT": ("arg",),
     "LT":  ("a", "b"),
     "GT":  ("a", "b"),
