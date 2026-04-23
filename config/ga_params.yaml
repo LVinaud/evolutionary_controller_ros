@@ -1,74 +1,76 @@
-# Parâmetros do orquestrador evolutivo. Carregado por
-# launch/train.launch.py e consumido por evolutionary_controller_ros/
-# evaluation/orchestrator.py (o próprio nó declara os defaults; aqui só
-# sobrescrevemos o que interessa para a corrida).
+# Parâmetros do orchestrator evolutivo.
+# Carregado por launch/train.launch.py; o próprio nó declara defaults,
+# aqui só sobrescrevemos o que interessa para a corrida.
 #
-# A rationale por trás de cada valor está em:
-#   - README.md, seção "Design decisions"
-#   - memory/project_gp_approach.md (memória persistente do agente)
+# Rationale de cada bloco: README.md ("Design decisions") e
+# memory/project_gp_approach.md.
 #
-# NOTA: gp_controller tem sua própria declaração de parâmetros
-# (velocidades, grab_reach, gripper, etc.). O orchestrator sobrescreve os
-# relevantes (genome_json, our_team, poses de alvos) via SetParameters
-# em cada episódio — não os colocamos aqui.
+# gp_controller tem sua própria declaração de parâmetros (velocidades,
+# grip, tópicos). Durante o treino, o orchestrator sobrescreve
+# `genome_json`, `target_x`, `target_y` por episódio via SetParameters;
+# o resto fica como o gp_controller vier.
 
 orchestrator:
   ros__parameters:
-    # --- Mundo / time ---
+    # --- Mundo ---
     world_name: "capture_the_flag_world"
-    our_team: "blue"            # "blue" ou "red" — no treino somos azul
 
     # --- GA ---
     pop_size: 20
     n_generations: 30
     init_max_depth: 5
-    # grow init: prob de um nó virar operador (vs terminal direto). Mais
-    # alto = pop inicial com árvores maiores. 0.5 é Koza default; 0.7
-    # reduz drasticamente o número de árvores triviais `size=1` na gen 0.
+    # grow init: prob de um nó virar operador (vs terminal direto).
+    # 0.5 é Koza default; 0.7 reduz árvores triviais size=1 na gen 0.
     init_op_prob: 0.7
     init_erc_prob: 0.3
     crossover_rate: 0.9      # Koza: filho é crossover OU mutação
-    elite_k: 1               # elitismo K=1; função preparada para K>1
+    elite_k: 1               # elitismo K=1; código aceita K>1
     seed: 42
 
     # --- Episódio ---
-    scenario_duration_s: 30.0   # teto; parada antecipada ao entregar
-    tick_hz: 10.0               # 300 samples por episódio no teto
+    # Teto em segundos (wall-clock). Parada antecipada quando o robô
+    # chega dentro de `reach_radius_m` do alvo.
+    scenario_duration_s: 30.0
+    tick_hz: 10.0            # 10 Hz de amostragem de fitness/odom
 
     # --- Detecção de colisão ---
     # 0.25m ≈ meia-diagonal do chassi do prm_2026 (0.42 × 0.31m, ~0.44m
-    # com rodas) com folga. Debounce evita múltiplos eventos por contato.
+    # com rodas). Debounce evita múltiplos eventos por contato contínuo.
     collision_radius_m: 0.25
     collision_debounce_s: 0.5
 
-    # --- Entrega da bandeira ---
-    # Raio da zona de deploy: 1.0m.
-    deploy_zone_radius_m: 1.0
-
-    # --- Exploração ---
-    # Grid 0.5m para contar células distintas visitadas (métrica 'espaco_explorado').
-    exploration_cell_size_m: 0.5
+    # --- Alvo ---
+    # Distância <= reach_radius → `alcancou_alvo=1` e parada antecipada.
+    reach_radius_m: 0.5
 
     # --- Spawn ---
-    # Robô é teleportado (x, y, z=spawn_height) e cai livremente até pousar.
-    # z=0 enterra no chão → colisão prende as rodas. 0.3m é seguro.
+    # Robô é teleportado em (x, y, z=spawn_height) e cai livremente até
+    # pousar. z=0 enterra as rodas no chão e impede movimento.
     robot_spawn_z_m: 0.3
 
+    # --- Fitness (casos por cenário, em ordem preservada pelo lexicase) ---
+    # Opções em fitness.py → ALL_METRICS: (dist_min_alvo_neg,
+    # alcancou_alvo, colisoes_neg). Remover entradas para simplificar.
+    enabled_metrics: ["dist_min_alvo_neg", "alcancou_alvo", "colisoes_neg"]
+
     # --- Cenários ---
-    # Lista JSON de poses iniciais do robô. Cada cenário gera 7 casos
-    # fitness; o vetor final tem 7 × len(scenarios) entradas.
-    # NÃO hardcodar poses de alvos aqui — o orchestrator lê /world/.../pose/info.
+    # Lista JSON de {name, start:[x,y,yaw], target:[x,y]}. Cada cenário
+    # contribui len(enabled_metrics) casos ao vetor lexicase.
+    # Varie poses iniciais × alvos para generalização — o GP evolui
+    # "ir de A a B", independente de qual A ou B são.
     scenarios_json: >
       [
-        {"name": "from_base",     "x": 6.0, "y": 0.0, "yaw":  3.14159},
-        {"name": "north_center",  "x": 0.0, "y": 3.0, "yaw": -1.5708}
+        {"name": "base_to_center",   "start": [6.0, 0.0,  3.14159], "target": [0.0, 0.0]},
+        {"name": "base_to_far",      "start": [6.0, 0.0,  3.14159], "target": [-6.0, 0.0]},
+        {"name": "corner_to_base",   "start": [0.0, 3.0, -1.5708 ], "target": [-6.0, 0.0]},
+        {"name": "behind_obstacles", "start": [6.0, 0.0,  3.14159], "target": [-3.0, 2.0]},
+        {"name": "center_to_blue",   "start": [0.0, 0.0,  0.0    ], "target": [ 6.0, 0.0]}
       ]
 
     # --- Aceleração da simulação ---
-    # 1.0 = tempo-real. Em WSL com software rendering o Gazebo Fortress fica
-    # CPU-bound a ~50%, então pedir >1 não faz efeito (é clampado).
-    # Num host com GPU decente, tentar 3-5. Sem efeito se o host não aguenta.
+    # 1.0 = tempo-real. No WSL com software rendering o Fortress fica
+    # CPU-bound a ~50%, então pedir >1 não tem efeito (é clampado).
     real_time_factor: 1.0
 
     # --- Saída ---
-    output_dir: "genomes"        # onde salvar best.json
+    output_dir: "genomes"

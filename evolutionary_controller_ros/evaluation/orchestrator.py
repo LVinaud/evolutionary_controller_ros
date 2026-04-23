@@ -1,17 +1,22 @@
 """ROS2 executable: runs the evolutionary loop.
 
 The orchestrator is a ROS2 node but does *not* drive the robot — it only:
-    1. Discovers target poses from /world/<name>/pose/info (no hardcoding).
+    1. Discovers drift-prone model poses from /world/<name>/pose/info
+       (so they can be reset between episodes without hardcoding).
     2. Iterates the GA (`evolution/algorithm.run_ga`), with each fitness
        evaluation running N scenario episodes via `evaluation/episode.py`.
     3. Logs per-generation metrics and saves the champion genome to disk.
 
 The robot is driven by a separately-launched `gp_controller` node; the
-orchestrator talks to it only via ROS params and the `/gp_controller/reset`
-service (see `evaluation/episode.py`).
+orchestrator talks to it only via ROS params (`genome_json`, `target_x`,
+`target_y`) and the `/gp_controller/reset` service.
+
+Training drives pure go-to-goal: each scenario declares a `target` pose,
+and the episode measures how well the genome navigates the robot there.
+The CTF mission — what target to pick, when to grab/drop the flag — is
+the `gp_controller`'s "ctf" mode concern, not the training loop's.
 """
 import json
-import os
 import random
 import time
 from pathlib import Path
@@ -21,29 +26,26 @@ from rclpy.node import Node
 
 from . import episode as ep
 from ..evolution import algorithm as alg
+from ..evolution import fitness as fit
 from ..evolution import genome as g
 from . import world_reset as wr
 
 
-_DEFAULT_MODEL_NAMES = {
-    "robot":        "prm_robot",
-    "own_base":     {"blue": "blue_base",  "red": "red_base"},
-    "enemy_base":   {"blue": "red_base",   "red": "blue_base"},
-    "enemy_flag":   {"blue": "red_flag",   "red": "blue_flag"},
-    "deploy_zone":  "flag_deploy_zone",
-}
+_ROBOT_MODEL_NAME = "prm_robot"
 
-# Non-static world models that drift under robot contact (the professor's SDF
-# does not mark them `<static>true</static>`). We snapshot their poses on
-# startup and teleport them back at every episode reset.
+# Non-static world models that drift under robot contact. Snapshotted on
+# startup and teleported back at every reset. With arena_cilindros.sdf
+# now marking paredes_arena as <static>true</static>, we only reset the
+# remaining loose groups.
 _DRIFTY_MODELS = (
-    "paredes_arena",
     "obstaculos_azul",
     "obstaculos_vermelho",
     "center_zone",
     "blue_base",
     "red_base",
     "flag_deploy_zone",
+    "blue_flag",
+    "red_flag",
 )
 
 
@@ -53,8 +55,8 @@ class Orchestrator(Node):
         self._declare_params()
 
     def _declare_params(self):
+        # --- World & GA ---
         self.declare_parameter("world_name", "capture_the_flag_world")
-        self.declare_parameter("our_team", "blue")
         self.declare_parameter("pop_size", 20)
         self.declare_parameter("n_generations", 30)
         self.declare_parameter("init_max_depth", 5)
@@ -63,18 +65,32 @@ class Orchestrator(Node):
         self.declare_parameter("crossover_rate", 0.9)
         self.declare_parameter("elite_k", 1)
         self.declare_parameter("seed", 42)
+        # --- Episode ---
         self.declare_parameter("scenario_duration_s", 30.0)
         self.declare_parameter("tick_hz", 10.0)
         self.declare_parameter("collision_radius_m", 0.25)
         self.declare_parameter("collision_debounce_s", 0.5)
-        self.declare_parameter("deploy_zone_radius_m", 1.0)
-        self.declare_parameter("exploration_cell_size_m", 0.5)
+        self.declare_parameter("reach_radius_m", 0.5)
         self.declare_parameter("robot_spawn_z_m", 0.3)
+        # --- Fitness (lexicase) ---
+        # Subset of fit.ALL_METRICS to emit per scenario, preserving order.
+        self.declare_parameter(
+            "enabled_metrics",
+            list(fit.ALL_METRICS),
+        )
+        # --- Scenarios ---
+        # JSON list of {name, start: [x,y,yaw], target: [x,y]}.
         self.declare_parameter(
             "scenarios_json",
             json.dumps([
-                {"name": "from_base", "x": 6.0, "y": 0.0, "yaw": 3.14159},
-                {"name": "north_center", "x": 0.0, "y": 3.0, "yaw": -1.5708},
+                {"name": "base_to_center",   "start": [6.0, 0.0, 3.14159],
+                 "target": [0.0, 0.0]},
+                {"name": "base_to_far",      "start": [6.0, 0.0, 3.14159],
+                 "target": [-6.0, 0.0]},
+                {"name": "corner_to_base",   "start": [0.0, 3.0, -1.5708],
+                 "target": [-6.0, 0.0]},
+                {"name": "behind_obstacles", "start": [6.0, 0.0, 3.14159],
+                 "target": [-3.0, 2.0]},
             ]),
         )
         self.declare_parameter("output_dir", "genomes")
@@ -84,30 +100,36 @@ class Orchestrator(Node):
 
     def run(self):
         world_name = self.get_parameter("world_name").value
-        team = self.get_parameter("our_team").value
         rng = random.Random(int(self.get_parameter("seed").value))
 
         rtf = float(self.get_parameter("real_time_factor").value)
         if rtf != 1.0:
-            self.get_logger().info(f"setting real_time_factor={rtf} on world '{world_name}'")
+            self.get_logger().info(
+                f"setting real_time_factor={rtf} on world '{world_name}'")
             try:
                 wr.set_physics(world_name, real_time_factor=rtf)
             except RuntimeError as e:
-                self.get_logger().warn(f"set_physics failed, continuing at default RTF: {e}")
+                self.get_logger().warn(
+                    f"set_physics failed, continuing at default RTF: {e}")
 
         self.get_logger().info(
-            f"querying world '{world_name}' for target poses...")
+            f"querying world '{world_name}' to snapshot drift-prone model poses...")
         poses = wr.query_model_poses(world_name)
 
-        world_cfg = self._build_world_config(poses, team)
-        scenarios = self._build_scenarios(world_cfg.enemy_flag_pose)
+        world_cfg = self._build_world_config(poses)
+        scenarios = self._build_scenarios()
 
         self.get_logger().info(
-            f"poses: own_base={world_cfg.own_base_pose}, "
-            f"enemy_base={world_cfg.enemy_base_pose}, "
-            f"enemy_flag={world_cfg.enemy_flag_pose}, "
-            f"deploy={world_cfg.deploy_zone_pose}")
-        self.get_logger().info(f"scenarios: {[s.name for s in scenarios]}")
+            f"drift reset list: "
+            f"{[name for name, *_ in world_cfg.static_models_to_reset]}")
+        self.get_logger().info(
+            f"scenarios: {[(s.name, s.target_pose) for s in scenarios]}")
+
+        enabled_metrics = tuple(
+            self.get_parameter("enabled_metrics").value)
+        self.get_logger().info(
+            f"fitness cases per scenario: {enabled_metrics} "
+            f"({len(enabled_metrics) * len(scenarios)} total)")
 
         pop_size = int(self.get_parameter("pop_size").value)
         out_dir = Path(self.get_parameter("output_dir").value)
@@ -122,7 +144,7 @@ class Orchestrator(Node):
                 f"depth={g.depth(tree)}")
             self.get_logger().info(f"    genome: {tree_json}")
             return _score_tree(self, tree, scenarios, world_cfg,
-                               self.get_parameter("exploration_cell_size_m").value)
+                               enabled_metrics)
 
         def on_gen(gen, pop, case_matrix, best_idx):
             elapsed = time.monotonic() - counter["t_gen_start"]
@@ -157,39 +179,16 @@ class Orchestrator(Node):
 
     # ----------------------------------------------------------------------
 
-    def _build_world_config(self, poses: dict, team: str) -> ep.WorldConfig:
-        def pick(key):
-            target = _DEFAULT_MODEL_NAMES[key]
-            if isinstance(target, dict):
-                target = target[team]
-            if target not in poses:
-                raise RuntimeError(
-                    f"model {target!r} not found in /pose/info snapshot")
-            x, y, _yaw = poses[target]
-            return target, (x, y)
-
-        _, own_base  = pick("own_base")
-        _, enemy_base = pick("enemy_base")
-        ef_name, enemy_flag = pick("enemy_flag")
-        _, deploy_zone = pick("deploy_zone")
-
+    def _build_world_config(self, poses: dict) -> ep.WorldConfig:
         return ep.WorldConfig(
             world_name=self.get_parameter("world_name").value,
-            robot_model_name=_DEFAULT_MODEL_NAMES["robot"],
-            enemy_flag_model_name=ef_name,
-            our_team=team,
-            enemy_flag_pose=enemy_flag,
-            own_base_pose=own_base,
-            enemy_base_pose=enemy_base,
-            deploy_zone_pose=deploy_zone,
+            robot_model_name=_ROBOT_MODEL_NAME,
             collision_radius_m=float(
                 self.get_parameter("collision_radius_m").value),
             collision_debounce_s=float(
                 self.get_parameter("collision_debounce_s").value),
-            deploy_zone_radius_m=float(
-                self.get_parameter("deploy_zone_radius_m").value),
-            exploration_cell_size_m=float(
-                self.get_parameter("exploration_cell_size_m").value),
+            reach_radius_m=float(
+                self.get_parameter("reach_radius_m").value),
             robot_spawn_z_m=float(
                 self.get_parameter("robot_spawn_z_m").value),
             static_models_to_reset=tuple(
@@ -197,41 +196,41 @@ class Orchestrator(Node):
             ),
         )
 
-    def _build_scenarios(self, enemy_flag_initial: tuple) -> list:
+    def _build_scenarios(self) -> list:
         raw = self.get_parameter("scenarios_json").value
         specs = json.loads(raw)
         dur = float(self.get_parameter("scenario_duration_s").value)
         hz = float(self.get_parameter("tick_hz").value)
-        return [
-            ep.ScenarioConfig(
+        out = []
+        for s in specs:
+            sx, sy, syaw = s["start"]
+            tx, ty = s["target"]
+            out.append(ep.ScenarioConfig(
                 name=s["name"],
-                robot_start=(float(s["x"]), float(s["y"]), float(s["yaw"])),
-                enemy_flag_initial=enemy_flag_initial,
+                robot_start=(float(sx), float(sy), float(syaw)),
+                target_pose=(float(tx), float(ty)),
                 duration_s=dur,
                 tick_hz=hz,
-            )
-            for s in specs
-        ]
+            ))
+        return out
 
 
 # ==========================================================================
 # Evaluator helper — 1 tree → case vector (concatenated over scenarios)
 # ==========================================================================
 
-def _score_tree(node, tree, scenarios, world_cfg, cell_size_m) -> list:
-    from ..evolution import fitness as fit
+def _score_tree(node, tree, scenarios, world_cfg, enabled_metrics) -> list:
     cases = []
     for sc in scenarios:
         history = ep.run_episode(node, tree, sc, world_cfg)
         sc_cases = fit.compute_fitness_cases(
-            history, exploration_cell_size_m=cell_size_m)
+            history, enabled_metrics=enabled_metrics)
         node.get_logger().info(
             f"    scenario '{sc.name}': "
-            f"held={history['holding_any_tick']} "
-            f"delivered={history['delivered']} "
+            f"reached={history['reached_target']} "
+            f"min_dist={history['min_dist_target_m']:.2f}m "
             f"collisions={history['collision_events']} "
-            f"elapsed={history['elapsed_s']:.1f}s "
-            f"cells={len(set((int(x/cell_size_m), int(y/cell_size_m)) for x,y in history['positions_xy']))}")
+            f"elapsed={history['elapsed_s']:.1f}s")
         cases.extend(sc_cases)
     return cases
 

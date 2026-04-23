@@ -1,41 +1,36 @@
-"""Run one CTF episode and collect the `history` dict expected by fitness.py.
+"""Run one go-to-goal episode and collect the `history` dict for fitness.py.
 
-This module is a ROS2 helper (NOT a node) used by `orchestrator.py`. It
-assumes:
-    - a long-running `gp_controller` node is already up and idle.
-    - a `/gp_controller/reset` service is available to clear per-episode
-      state between runs.
-    - the usual prm_2026 topics (`/odom_gt`, `/scan`, `/clock`) are alive.
+ROS2 helper (not a node) used by `orchestrator.py`. Assumes:
+    - a long-running `gp_controller` node is up and subscribed to /odom,
+      /scan, its `genome_json`, `target_x`, `target_y` ROS parameters.
+    - `/gp_controller/reset` is available to clear per-episode state.
+    - the prm_2026 topics (`/odom_gt`, `/scan`, `/clock`) are alive.
 
 Per-episode flow
-    1. SetParameters on gp_controller: genome_json + target poses + our_team.
+    1. SetParameters on gp_controller: genome_json + target_x/y.
     2. Call `/gp_controller/reset`.
-    3. `set_model_pose` to teleport robot to scenario start pose and the
-       enemy flag back to its "initial" pose.
-    4. Spin for scenario_time_s, collecting a tick-by-tick history:
-         - robot pose (for exploration grid & colision debounce)
-         - `/gp_controller/holding_flag` (for pegou/entregou events)
-         - scan min (for collision detection)
-         - camera flag visibility (latched from labels_map if available)
-    5. Early stop when the `delivered` event fires.
-    6. Return the history dict (shape defined by fitness.compute_fitness_cases).
+    3. `set_model_pose` for the static drift-prone models, then for the
+       robot itself (spawning slightly above ground so wheels settle).
+    4. Spin for `duration_s`, collecting per-tick:
+         - robot pose (for distance-to-target tracking)
+         - scan min (for collision detection, debounced)
+    5. Early stop when the robot is within `reach_radius_m` of the target.
+    6. Return the history dict expected by `fitness.compute_fitness_cases`.
 
-The caller composes N scenarios' vectors into the 14-case vector the GA
-consumes; this module owns one scenario.
+No camera, no flag, no holding_flag — those are owned by the CTF state
+machine in `gp_controller` ("ctf" mode), which is out of scope for the
+training episode.
 """
 import math
 import time
 from dataclasses import dataclass
 from typing import Optional
 
-import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.executors import SingleThreadedExecutor
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import LaserScan, Image
-from std_msgs.msg import Bool
+from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Empty
 from rcl_interfaces.srv import SetParameters
 
@@ -45,9 +40,9 @@ from ..evolution import genome as g
 
 @dataclass
 class ScenarioConfig:
-    name: str                        # e.g. "from_base"
+    name: str                        # e.g. "from_base_to_center"
     robot_start: tuple               # (x, y, yaw)
-    enemy_flag_initial: tuple        # (x, y) — where the flag starts
+    target_pose: tuple               # (x, y) — the goal for this scenario
     duration_s: float = 30.0
     tick_hz: float = 10.0
 
@@ -56,20 +51,12 @@ class ScenarioConfig:
 class WorldConfig:
     world_name: str                  # "capture_the_flag_world"
     robot_model_name: str            # e.g. "prm_robot"
-    enemy_flag_model_name: str       # "blue_flag" or "red_flag"
-    our_team: str                    # "blue" | "red"
-    enemy_flag_pose: tuple           # initial (x, y) of the enemy flag
-    own_base_pose: tuple
-    enemy_base_pose: tuple
-    deploy_zone_pose: tuple
     collision_radius_m: float = 0.25
     collision_debounce_s: float = 0.5
-    deploy_zone_radius_m: float = 1.0
-    exploration_cell_size_m: float = 0.5
-    robot_spawn_z_m: float = 0.3     # drop from this height so wheels settle on ground
+    reach_radius_m: float = 0.5      # early-stop + "alcancou_alvo" threshold
+    robot_spawn_z_m: float = 0.3     # drop from this height so wheels settle
     # (model_name, x, y, yaw) of non-static world models that drift during
-    # episodes (walls that aren't `<static>true</static>`, obstacle groups,
-    # zone markers). Teleported back to their original pose on every reset.
+    # episodes. Teleported back to their snapshot pose on every reset.
     static_models_to_reset: tuple = ()
 
 
@@ -107,36 +94,25 @@ class _EpisodeCollector:
             Odometry, "/odom_gt", self._on_odom, 10)
         self._scan_sub = node.create_subscription(
             LaserScan, "/scan", self._on_scan, 10)
-        self._labels_sub = node.create_subscription(
-            Image, "/robot_cam/labels_map", self._on_labels, 10)
-        self._holding_sub = node.create_subscription(
-            Bool, "/gp_controller/holding_flag", self._on_holding, 10)
 
         self._reset_state()
 
     def teardown(self):
         self.node.destroy_subscription(self._odom_sub)
         self.node.destroy_subscription(self._scan_sub)
-        self.node.destroy_subscription(self._labels_sub)
-        self.node.destroy_subscription(self._holding_sub)
 
     # ----------------------------------------------------------------------
 
     def _reset_state(self):
         self._odom_msg: Optional[Odometry] = None
         self._scan_msg: Optional[LaserScan] = None
-        self._labels_frame: Optional[np.ndarray] = None
-        self._holding_flag = False
-        self._prev_holding = False
 
         self._positions_xy: list = []
-        self._flag_visible_ticks = 0
-        self._holding_any_tick = False
-        self._delivered = False
-        self._min_dist_deploy_holding = math.inf
+        self._min_dist_target = math.inf
+        self._reached_target = False
         self._collision_events = 0
         self._last_collision_ts: Optional[float] = None
-        self._time_to_deliver_s: Optional[float] = None
+        self._time_to_reach_s: Optional[float] = None
 
     # ----------------------------------------------------------------------
     # Subscription callbacks
@@ -148,37 +124,18 @@ class _EpisodeCollector:
     def _on_scan(self, msg):
         self._scan_msg = msg
 
-    def _on_labels(self, msg):
-        if msg.encoding not in ("mono8", "8UC1"):
-            return
-        buf = np.frombuffer(msg.data, dtype=np.uint8)
-        self._labels_frame = buf.reshape(msg.height, msg.width)
-
-    def _on_holding(self, msg):
-        self._holding_flag = bool(msg.data)
-
     # ----------------------------------------------------------------------
-    # Setup: load genome + target poses, reset, teleport world
+    # Setup: load genome + target, reset, teleport world
     # ----------------------------------------------------------------------
 
     def setup(self, genome_tree: dict):
         self._reset_state()
 
-        fx, fy = self.world.enemy_flag_pose
-        ob_x, ob_y = self.world.own_base_pose
-        eb_x, eb_y = self.world.enemy_base_pose
-        dz_x, dz_y = self.world.deploy_zone_pose
+        tx, ty = self.scenario.target_pose
         params = [
             _str_param("genome_json", g.to_json(genome_tree)),
-            _str_param("our_team", self.world.our_team),
-            _dbl_param("enemy_flag_x", fx),
-            _dbl_param("enemy_flag_y", fy),
-            _dbl_param("own_base_x",   ob_x),
-            _dbl_param("own_base_y",   ob_y),
-            _dbl_param("enemy_base_x", eb_x),
-            _dbl_param("enemy_base_y", eb_y),
-            _dbl_param("deploy_zone_x", dz_x),
-            _dbl_param("deploy_zone_y", dz_y),
+            _dbl_param("target_x", tx),
+            _dbl_param("target_y", ty),
         ]
         self._call_set_parameters(params)
         self._call_reset()
@@ -192,10 +149,6 @@ class _EpisodeCollector:
                           self.world.robot_model_name,
                           rx, ry, ryaw,
                           z=self.world.robot_spawn_z_m)
-        flag_x0, flag_y0 = self.scenario.enemy_flag_initial
-        wr.set_model_pose(self.world.world_name,
-                          self.world.enemy_flag_model_name,
-                          flag_x0, flag_y0, 0.0)
 
     # ----------------------------------------------------------------------
     # Main loop
@@ -213,7 +166,7 @@ class _EpisodeCollector:
             if now - last_tick >= dt:
                 last_tick = now
                 self._tick(now - t_start)
-                if self._delivered:
+                if self._reached_target:
                     break
 
         return self._build_history(elapsed=time.monotonic() - t_start)
@@ -225,30 +178,13 @@ class _EpisodeCollector:
         pos = self._odom_msg.pose.pose.position
         self._positions_xy.append((pos.x, pos.y))
 
-        if self._holding_flag:
-            self._holding_any_tick = True
-            dx = pos.x - self.world.deploy_zone_pose[0]
-            dy = pos.y - self.world.deploy_zone_pose[1]
-            d = math.hypot(dx, dy)
-            if d < self._min_dist_deploy_holding:
-                self._min_dist_deploy_holding = d
-
-            wr.set_model_pose(self.world.world_name,
-                              self.world.enemy_flag_model_name,
-                              pos.x, pos.y, 0.0)
-
-        if self._prev_holding and not self._holding_flag:
-            dx = pos.x - self.world.deploy_zone_pose[0]
-            dy = pos.y - self.world.deploy_zone_pose[1]
-            if math.hypot(dx, dy) < self.world.deploy_zone_radius_m:
-                self._delivered = True
-                self._time_to_deliver_s = elapsed_s
-        self._prev_holding = self._holding_flag
-
-        if self._labels_frame is not None:
-            enemy_label = 20 if self.world.our_team == "blue" else 25
-            if bool((self._labels_frame == enemy_label).any()):
-                self._flag_visible_ticks += 1
+        tx, ty = self.scenario.target_pose
+        d = math.hypot(pos.x - tx, pos.y - ty)
+        if d < self._min_dist_target:
+            self._min_dist_target = d
+        if d < self.world.reach_radius_m and not self._reached_target:
+            self._reached_target = True
+            self._time_to_reach_s = elapsed_s
 
         if self._scan_msg is not None:
             ranges = [r for r in self._scan_msg.ranges
@@ -265,12 +201,13 @@ class _EpisodeCollector:
         return {
             "positions_xy": self._positions_xy,
             "dt_s": 1.0 / self.scenario.tick_hz,
-            "flag_visible_ticks": self._flag_visible_ticks,
-            "holding_any_tick": self._holding_any_tick,
-            "delivered": self._delivered,
-            "min_dist_deploy_holding": self._min_dist_deploy_holding,
+            "target_pose": self.scenario.target_pose,
+            "min_dist_target_m": (self._min_dist_target
+                                  if math.isfinite(self._min_dist_target)
+                                  else self.world.reach_radius_m * 1e3),
+            "reached_target": self._reached_target,
             "collision_events": self._collision_events,
-            "time_to_deliver_s": self._time_to_deliver_s,
+            "time_to_reach_s": self._time_to_reach_s,
             "scenario_time_s": self.scenario.duration_s,
             "elapsed_s": elapsed,
         }

@@ -126,24 +126,19 @@ def stage3_crossover():
 def _fake_evaluator_factory():
     """Evaluator that rewards trees emitting FRENTE on a dummy feature set.
 
-    Returns the fitness vector [action_is_frente, -size] so lexicase has
-    a real trade-off: 'picks FRENTE' vs 'small tree'. Over generations,
-    both should rise (especially after elitism).
+    Two feature snapshots — both with the target dead ahead (alvo_frente
+    true, alvo_proximo false). A tree whose action is FRENTE scores
+    maximum; anything else scores 0.
     """
-    # A tiny set of feature vectors the evaluator queries the tree against.
     feature_samples = [
-        # Baseline — nothing obstructing, flag invisible.
-        {k: 0.0 for k in _ALL_FLOAT_TERMS},
-        # Flag centered right in front — should reward FRENTE.
-        {**{k: 0.0 for k in _ALL_FLOAT_TERMS},
-         "angulo_bandeira_inimiga": 0.0},
+        {**{k: 0.0 for k in g.FLOAT_TERMINALS},
+         **{k: False for k in g.BOOL_TERMINALS},
+         "alvo_frente": True},
+        {**{k: 0.0 for k in g.FLOAT_TERMINALS},
+         **{k: False for k in g.BOOL_TERMINALS},
+         "alvo_frente": True,
+         "dist_alvo": 0.3},
     ]
-    # Fill bool defaults to False so evaluate() doesn't blow up.
-    for s in feature_samples:
-        for b in _ALL_BOOL_TERMS:
-            s[b] = False
-        s["bandeira_inimiga_visivel"] = True
-        s["bandeira_centralizada"] = True
 
     def evaluator(tree):
         frente_hits = 0
@@ -154,21 +149,6 @@ def _fake_evaluator_factory():
         return [float(frente_hits), float(-g.size(tree))]
 
     return evaluator
-
-
-_ALL_FLOAT_TERMS = [
-    "dist_frente", "dist_esq", "dist_dir", "dist_atras",
-    "angulo_bandeira_inimiga", "dist_base_propria", "angulo_base_propria",
-    "dist_zona_deploy", "angulo_zona_deploy",
-    "velocidade_linear", "velocidade_angular",
-]
-_ALL_BOOL_TERMS = [
-    "obstaculo_frente", "obstaculo_esq", "obstaculo_dir",
-    "bandeira_inimiga_visivel",
-    "bandeira_esquerda", "bandeira_direita", "bandeira_centralizada",
-    "segurando_bandeira", "na_base_propria", "na_zona_deploy",
-    "base_inimiga_visivel",
-]
 
 
 def stage4_ga():
