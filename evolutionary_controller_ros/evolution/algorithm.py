@@ -29,6 +29,9 @@ from typing import Callable
 from . import genome as g
 from . import population as p
 
+MAX_TREE_DEPTH = 6
+MAX_TREE_SIZE = 50
+
 
 # ==========================================================================
 # Selection
@@ -105,7 +108,7 @@ def assemble_case_matrix(
     base_cases: list,
     pop: list,
     *,
-    include_parsimony: bool = True,
+    include_parsimony: bool = False,
 ) -> list:
     """Attach a negated-size parsimony case to each base case vector.
 
@@ -135,7 +138,7 @@ def run_ga(
     crossover_rate: float = 0.9,
     mutation_rates: dict | None = None,
     elite_k: int = 1,
-    include_parsimony: bool = True,
+    include_parsimony: bool = False,
     on_generation: Callable | None = None,
 ) -> dict:
     """Run the GA and return the best individual across all generations.
@@ -200,10 +203,18 @@ def _breed_next_generation(
             a = epsilon_lexicase_select(rng, pop, case_matrix, epsilons=eps)
             b = epsilon_lexicase_select(rng, pop, case_matrix, epsilons=eps)
             child, _ = p.crossover(rng, a, b)
-            next_pop.append(child)
+            if g.depth(child) <= MAX_TREE_DEPTH and g.size(child) <= MAX_TREE_SIZE:
+                next_pop.append(child)
+            else:
+                next_pop.append(a)  # fallback simplest is to keep one parent unchanged
         else:
             parent = epsilon_lexicase_select(rng, pop, case_matrix,
                                              epsilons=eps)
-            next_pop.append(p.mutate(rng, parent, rates=mutation_rates))
+            mut = p.mutate(rng, parent, rates=mutation_rates)
+
+            if g.depth(mut) <= MAX_TREE_DEPTH and g.size(mut) <= MAX_TREE_SIZE:
+                next_pop.append(mut)
+            else:
+                next_pop.append(parent)  # fallback
 
     return next_pop[:pop_size]
