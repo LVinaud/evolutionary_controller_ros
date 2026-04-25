@@ -65,8 +65,19 @@ def run_episode(
     genome_tree: dict,
     scenario: ScenarioConfig,
     world: WorldConfig,
+    timing_log=None,
+    timing_extras: dict | None = None,
 ) -> dict:
-    collector = _EpisodeCollector(node, scenario, world)
+    """Run one episode and return its history dict.
+
+    `timing_log` (optional `TimingLog`) collects fine-grained per-phase
+    timings for offline analysis. `timing_extras` is a dict merged into
+    every event emitted by this episode (e.g. `{"gen": 3, "individual":
+    12}`) so rows can be grouped later.
+    """
+    collector = _EpisodeCollector(node, scenario, world,
+                                  timing_log=timing_log,
+                                  timing_extras=timing_extras or {})
     try:
         collector.setup(genome_tree)
         return collector.run()
@@ -80,10 +91,14 @@ def run_episode(
 
 class _EpisodeCollector:
     def __init__(self, node: Node, scenario: ScenarioConfig,
-                 world: WorldConfig):
+                 world: WorldConfig, *,
+                 timing_log=None, timing_extras: dict | None = None):
         self.node = node
         self.scenario = scenario
         self.world = world
+        self._timing = timing_log
+        self._timing_extras = dict(timing_extras or {})
+        self._timing_extras.setdefault("scenario", scenario.name)
 
         self._set_params_client = node.create_client(
             SetParameters, "/gp_controller/set_parameters")
@@ -96,6 +111,12 @@ class _EpisodeCollector:
             LaserScan, "/scan", self._on_scan, 10)
 
         self._reset_state()
+
+    def _record(self, category: str, duration_s: float, **extras):
+        if self._timing is None:
+            return
+        self._timing.event(category, duration_s,
+                           **self._timing_extras, **extras)
 
     def teardown(self):
         self.node.destroy_subscription(self._odom_sub)
@@ -137,18 +158,28 @@ class _EpisodeCollector:
             _dbl_param("target_x", tx),
             _dbl_param("target_y", ty),
         ]
+        t0 = time.monotonic()
         self._call_set_parameters(params)
-        self._call_reset()
+        self._record("setup_param_push", time.monotonic() - t0)
 
+        t0 = time.monotonic()
+        self._call_reset()
+        self._record("setup_reset_call", time.monotonic() - t0)
+
+        t0 = time.monotonic()
         for model_name, mx, my, myaw in self.world.static_models_to_reset:
             wr.set_model_pose(self.world.world_name, model_name,
                               mx, my, myaw)
+        self._record("setup_teleport_models", time.monotonic() - t0,
+                     models_count=len(self.world.static_models_to_reset))
 
         rx, ry, ryaw = self.scenario.robot_start
+        t0 = time.monotonic()
         wr.set_model_pose(self.world.world_name,
                           self.world.robot_model_name,
                           rx, ry, ryaw,
                           z=self.world.robot_spawn_z_m)
+        self._record("setup_teleport_robot", time.monotonic() - t0)
 
     # ----------------------------------------------------------------------
     # Main loop
@@ -159,17 +190,34 @@ class _EpisodeCollector:
         t_start = time.monotonic()
         t_end = t_start + self.scenario.duration_s
         last_tick = t_start
+        ticks = 0
+        spin_total = 0.0
 
         while time.monotonic() < t_end:
+            t_spin0 = time.monotonic()
             rclpy.spin_once(self.node, timeout_sec=dt)
+            spin_total += time.monotonic() - t_spin0
             now = time.monotonic()
             if now - last_tick >= dt:
                 last_tick = now
                 self._tick(now - t_start)
+                ticks += 1
                 if self._reached_target:
                     break
 
-        return self._build_history(elapsed=time.monotonic() - t_start)
+        elapsed = time.monotonic() - t_start
+        self._record(
+            "episode_spin", elapsed,
+            ticks_collected=ticks,
+            early_stop=bool(self._reached_target),
+            duration_cap_s=self.scenario.duration_s,
+            spin_once_total_s=spin_total,
+            collisions=self._collision_events,
+            min_dist_target_m=(self._min_dist_target
+                               if math.isfinite(self._min_dist_target)
+                               else -1.0),
+        )
+        return self._build_history(elapsed=elapsed)
 
     def _tick(self, elapsed_s: float):
         if self._odom_msg is None:

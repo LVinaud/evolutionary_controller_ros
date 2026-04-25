@@ -24,6 +24,7 @@ Elitism
 """
 import random
 import statistics
+import time
 from typing import Callable
 
 from . import genome as g
@@ -141,6 +142,7 @@ def run_ga(
     include_parsimony: bool = False,
     on_generation: Callable | None = None,
     seeds: list | None = None,
+    timing_log=None,
 ) -> dict:
     """Run the GA and return the best individual across all generations.
 
@@ -153,16 +155,29 @@ def run_ga(
     callback invoked once per generation after evaluation; useful for
     logging and checkpointing without coupling this function to I/O.
     """
+    t0 = time.monotonic()
     pop = p.init_population(rng, pop_size, init_max_depth,
                             op_prob=init_op_prob, erc_prob=init_erc_prob,
                             seeds=seeds)
+    if timing_log is not None:
+        timing_log.event("ga_init_population", time.monotonic() - t0,
+                         pop_size=pop_size, seeds_count=len(seeds or []))
     best_tree = None
     best_mean = -float("inf")
 
     for gen in range(n_generations):
+        t_eval = time.monotonic()
         base_cases = [evaluator(tree) for tree in pop]
+        if timing_log is not None:
+            timing_log.event("ga_eval_population", time.monotonic() - t_eval,
+                             gen=gen, pop_size=pop_size)
+
+        t_assemble = time.monotonic()
         case_matrix = assemble_case_matrix(base_cases, pop,
                                            include_parsimony=include_parsimony)
+        if timing_log is not None:
+            timing_log.event("ga_assemble_cases",
+                             time.monotonic() - t_assemble, gen=gen)
 
         means = [sum(row) / len(row) for row in case_matrix]
         gen_best_idx = max(range(pop_size), key=lambda i: means[i])
@@ -171,11 +186,16 @@ def run_ga(
             best_tree = pop[gen_best_idx]
 
         if on_generation is not None:
+            t_cb = time.monotonic()
             on_generation(gen, pop, case_matrix, gen_best_idx)
+            if timing_log is not None:
+                timing_log.event("ga_on_generation_cb",
+                                 time.monotonic() - t_cb, gen=gen)
 
         if gen == n_generations - 1:
             break
 
+        t_breed = time.monotonic()
         pop = _breed_next_generation(
             rng, pop, case_matrix,
             pop_size=pop_size,
@@ -183,6 +203,9 @@ def run_ga(
             mutation_rates=mutation_rates,
             elite_k=elite_k,
         )
+        if timing_log is not None:
+            timing_log.event("ga_breed", time.monotonic() - t_breed,
+                             gen=gen, pop_size=pop_size)
 
     return best_tree
 

@@ -25,6 +25,7 @@ import rclpy
 from rclpy.node import Node
 
 from . import episode as ep
+from . import timing as tlog
 from ..evolution import algorithm as alg
 from ..evolution import fitness as fit
 from ..evolution import genome as g
@@ -142,15 +143,33 @@ class Orchestrator(Node):
         out_dir.mkdir(parents=True, exist_ok=True)
         counter = {"gen": 0, "ind": 0, "t_gen_start": time.monotonic()}
 
+        timing = tlog.TimingLog()
+        run_stamp = time.strftime("%Y%m%d_%H%M%S")
+        timing_path = out_dir / f"timing_{run_stamp}.csv"
+        self.get_logger().info(f"timing log will be written to {timing_path}")
+
         def evaluator(tree: dict) -> list:
             counter["ind"] += 1
             tree_json = g.to_json(tree)
+            tree_size = g.size(tree)
+            tree_depth = g.depth(tree)
             self.get_logger().info(
-                f"  ind {counter['ind']}/{pop_size} size={g.size(tree)} "
-                f"depth={g.depth(tree)}")
+                f"  ind {counter['ind']}/{pop_size} size={tree_size} "
+                f"depth={tree_depth}")
             self.get_logger().info(f"    genome: {tree_json}")
-            return _score_tree(self, tree, scenarios, world_cfg,
-                               enabled_metrics)
+            t0 = time.monotonic()
+            cases = _score_tree(self, tree, scenarios, world_cfg,
+                                enabled_metrics, timing,
+                                gen=counter["gen"],
+                                individual=counter["ind"])
+            timing.event(
+                "eval_individual_total", time.monotonic() - t0,
+                gen=counter["gen"], individual=counter["ind"],
+                tree_size=tree_size, tree_depth=tree_depth,
+                n_scenarios=len(scenarios),
+            )
+            timing.write_csv(timing_path)  # flush after each individual — survives crash
+            return cases
 
         def on_gen(gen, pop, case_matrix, best_idx):
             elapsed = time.monotonic() - counter["t_gen_start"]
@@ -185,10 +204,14 @@ class Orchestrator(Node):
             elite_k=int(self.get_parameter("elite_k").value),
             seeds=seeds or None,
             on_generation=on_gen,
+            timing_log=timing,
         )
 
         (out_dir / "best.json").write_text(g.to_json(best))
         self.get_logger().info(f"saved final champion to {out_dir / 'best.json'}")
+        timing.write_csv(timing_path)
+        self.get_logger().info(
+            f"timing log: {len(timing.events)} events → {timing_path}")
 
     # ----------------------------------------------------------------------
 
@@ -232,12 +255,28 @@ class Orchestrator(Node):
 # Evaluator helper — 1 tree → case vector (concatenated over scenarios)
 # ==========================================================================
 
-def _score_tree(node, tree, scenarios, world_cfg, enabled_metrics) -> list:
+def _score_tree(node, tree, scenarios, world_cfg, enabled_metrics,
+                timing=None, *, gen=None, individual=None) -> list:
     cases = []
     for sc in scenarios:
-        history = ep.run_episode(node, tree, sc, world_cfg)
+        t0 = time.monotonic()
+        history = ep.run_episode(
+            node, tree, sc, world_cfg,
+            timing_log=timing,
+            timing_extras={"gen": gen, "individual": individual,
+                           "scenario": sc.name},
+        )
         sc_cases = fit.compute_fitness_cases(
             history, enabled_metrics=enabled_metrics)
+        if timing is not None:
+            timing.event(
+                "scenario_total", time.monotonic() - t0,
+                gen=gen, individual=individual, scenario=sc.name,
+                reached=int(history["reached_target"]),
+                min_dist_target_m=float(history["min_dist_target_m"]),
+                collisions=int(history["collision_events"]),
+                elapsed_s=float(history["elapsed_s"]),
+            )
         node.get_logger().info(
             f"    scenario '{sc.name}': "
             f"reached={history['reached_target']} "
