@@ -81,6 +81,21 @@ if [[ ! -d evolutionary_controller_ros ]]; then
     git clone -b "${EVO_BRANCH}" "${EVO_REPO}"
 fi
 
+# Patch the prm_2026 simulation launch to run Gazebo server-only.
+# Background: prm_2026's inicia_simulacao.launch.py invokes
+# `ign gazebo -r -v 3 <world>` and its own comment says "modo headless
+# (sem GUI)" — but the actual command is missing the `-s` flag, so the
+# GUI does start. On WSL2 (Windows 10 especially, which has no WSLg)
+# the GUI process crashes inside Qt's XCB clipboard handler, taking
+# the simulation server down with it. A worker has no use for the GUI
+# anyway, so the cleanest fix is to honour the original intent: add
+# `-s`. Idempotent: skip if already patched.
+PRM_LAUNCH="${WS_DIR}/src/prm_2026/launch/inicia_simulacao.launch.py"
+if [[ -f "${PRM_LAUNCH}" ]] && ! grep -q "'gazebo', '-s'" "${PRM_LAUNCH}"; then
+    say "patching prm_2026 launch to run Gazebo server-only (no GUI)"
+    sed -i "s|'gazebo', '-r'|'gazebo', '-s', '-r'|" "${PRM_LAUNCH}"
+fi
+
 # ---------------------------------------------------------------------- build
 say "colcon build"
 cd "${WS_DIR}"
