@@ -55,7 +55,7 @@ def test_crossover_swaps_same_typed_subtree():
     b = {"op": "IF",
          "cond": {"term": "obstaculo_frente"},
          "then": {"leaf": "RE", "dur_ms": 300},
-         "else": {"leaf": "GIRA_ESQ", "dur_ms": 400}}
+         "else": {"leaf": "GIRA_ESQ", "dur_ms": 200}}
     rng = random.Random(3)
     # Try many times to hit a real swap.
     for _ in range(50):
@@ -193,14 +193,14 @@ def test_mutate_point_returns_none_when_no_candidates():
 # --------------------------------------------------------------------------
 
 def test_mutate_leaf_action_changes_action_keeps_duration():
-    tree = {"leaf": "FRENTE", "dur_ms": 500}
+    tree = {"leaf": "FRENTE", "dur_ms": 200}
     for seed in range(10):
         rng = random.Random(seed)
         new = p._mutate_leaf_action(rng, tree)
         assert new is not None
         assert new["leaf"] != "FRENTE"
         assert new["leaf"] in g.ACTIONS
-        assert new["dur_ms"] == 500
+        assert new["dur_ms"] == 200
 
 
 def test_mutate_leaf_action_none_when_no_leaves():
@@ -213,7 +213,7 @@ def test_mutate_leaf_action_none_when_no_leaves():
 # --------------------------------------------------------------------------
 
 def test_mutate_leaf_duration_keeps_action_and_clips():
-    tree = {"leaf": "FRENTE", "dur_ms": 500}
+    tree = {"leaf": "FRENTE", "dur_ms": 200}
     for seed in range(30):
         rng = random.Random(seed)
         new = p._mutate_leaf_duration(rng, tree, sigma_ms=100.0)
@@ -224,7 +224,7 @@ def test_mutate_leaf_duration_keeps_action_and_clips():
 
 def test_mutate_leaf_duration_clips_to_bounds():
     # Huge sigma forces clipping on most draws.
-    tree = {"leaf": "FRENTE", "dur_ms": 500}
+    tree = {"leaf": "FRENTE", "dur_ms": 200}
     for seed in range(50):
         rng = random.Random(seed)
         new = p._mutate_leaf_duration(rng, tree, sigma_ms=10_000.0)

@@ -4,11 +4,14 @@ Given an `history` dict pre-computed by `evaluation/episode.py`, this
 module produces the per-scenario case vector in lexicase convention
 (larger is better).
 
-Three per-scenario metrics by default:
+Four per-scenario metrics by default:
     (a) dist_min_alvo_neg   MAX — negated min distance to target during episode
                                   (always finite, always different — dense signal)
-    (b) alcancou_alvo       MAX — 0/1, ever got within reach_radius of target
-    (c) colisoes_neg        MAX — negated debounced collision count
+    (b) dist_mean_alvo_neg  MAX — negated mean distance to target across all
+                                  sampled positions. Rewards sustained pursuit,
+                                  not one-off lucky approaches.
+    (c) alcancou_alvo       MAX — 0/1, ever got within reach_radius of target
+    (d) colisoes_neg        MAX — negated debounced collision count
 
 Any subset of the metrics can be selected via `enabled_metrics` — useful
 if Lazaro wants to simplify even further during tuning.
@@ -30,8 +33,11 @@ Expected `history` keys (populated by `episode.py`):
     collision_events    : int            debounced collisions (see episode.py)
     scenario_time_s     : float          episode cap
 """
+import math
+
 ALL_METRICS = (
     "dist_min_alvo_neg",
+    "dist_mean_alvo_neg",
     "alcancou_alvo",
     "colisoes_neg",
 )
@@ -59,6 +65,13 @@ def compute_fitness_cases(
 def _metric(history: dict, name: str) -> float:
     if name == "dist_min_alvo_neg":
         return -float(history["min_dist_target_m"])
+    if name == "dist_mean_alvo_neg":
+        positions = history["positions_xy"]
+        tx, ty = history["target_pose"]
+        if not positions:
+            return -float(history["min_dist_target_m"])
+        dists = [math.hypot(x - tx, y - ty) for x, y in positions]
+        return -(sum(dists) / len(dists))
     if name == "alcancou_alvo":
         return 1.0 if history["reached_target"] else 0.0
     if name == "colisoes_neg":

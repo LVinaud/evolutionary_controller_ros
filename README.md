@@ -112,30 +112,55 @@ With `--symlink-install`, `install/` becomes a pointer to the source in `src/` �
 
 ## Run
 
-Three terminals. On WSL you need `LIBGL_ALWAYS_SOFTWARE=1` on the ones that launch Gazebo (the `rsim` and `rrobo` aliases in `~/.bashrc` already do this).
+On WSL, `export LIBGL_ALWAYS_SOFTWARE=1` is required for any terminal that brings up Gazebo (the `rsim` / `rrobo` aliases in `~/.bashrc` set it; on a fresh machine, export it manually).
+
+There are two end-to-end flows: **training** (evolve a genome) and **CTF mission** (run the trained genome through the real game).
+
+### Training the genome
+
+Three terminals — Gazebo + robot + the GA orchestrator.
 
 ```bash
-# 1) World + bridge (professor's package)
-rsim     # = LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 inicia_simulacao.launch.py
+# Terminal 1 — Gazebo world (professor's package)
+LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 inicia_simulacao.launch.py
 
-# 2) Robot + controllers + RViz (professor's package)
-rrobo    # = LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 carrega_robo.launch.py
+# Terminal 2 — Robot + controllers + RViz (professor's package)
+LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 carrega_robo.launch.py
 
-# 3) Evolutionary controller (this package) — instead of the professor's controle_robo
-ros2 launch evolutionary_controller_ros run_controller.launch.py
+# Terminal 3 — gp_controller in TRAIN mode + orchestrator
+ros2 launch evolutionary_controller_ros run_controller.launch.py   # in one terminal
+ros2 launch evolutionary_controller_ros train.launch.py            # in another
 ```
 
-Training (evolutionary loop):
+Per-generation checkpoints are written to `genomes/gen_NNN_best.json`; the all-time best ends up in `genomes/best.json`. To override pop / generations:
 
 ```bash
-ros2 launch evolutionary_controller_ros train.launch.py
+ros2 run evolutionary_controller_ros orchestrator --ros-args \
+    --params-file install/evolutionary_controller_ros/share/evolutionary_controller_ros/config/ga_params.yaml \
+    -p pop_size:=10 -p n_generations:=8
 ```
 
-The orchestrator drops the champion in `genomes/best.json`. Demo:
+### Running the trained genome through the CTF mission
+
+`demo_best.launch.py` boots `gp_controller` in `mode="ctf"`, loads the genome JSON from disk, and injects the base/flag coordinates of `arena_cilindros.sdf`. The state machine then drives `genome → enemy_base → enemy_flag (PEGAR) → own_base (SOLTAR)`.
 
 ```bash
-ros2 launch evolutionary_controller_ros demo_best.launch.py genome:=genomes/best.json
+# Terminals 1 and 2 — same as training (world + robot)
+
+# Terminal 3 — run the best genome in CTF mode
+ros2 launch evolutionary_controller_ros demo_best.launch.py
+# default: loads genomes/best.json, blue team
 ```
+
+Custom genome path or RED-team coords:
+
+```bash
+ros2 launch evolutionary_controller_ros demo_best.launch.py \
+    genome:=genomes/gen_021_best.json \
+    own_base_x:=-6.0 enemy_base_x:=6.0 enemy_flag_x:=8.0
+```
+
+All overridable args: `genome`, `own_base_x/y`, `enemy_base_x/y`, `enemy_flag_x/y`, `phase_reach_radius_m` (≤ this distance from a phase target → advance), `grab_reach_m` (≤ this distance from the flag → PEGAR).
 
 ## Full structure, file by file
 
@@ -157,9 +182,9 @@ Use with `ros2 launch evolutionary_controller_ros <file>`.
 
 | File | Purpose |
 |---|---|
-| `run_controller.launch.py` | Brings up only the `gp_controller` node. Use when the world and the robot are already running in the other terminals. |
+| `run_controller.launch.py` | Brings up only the `gp_controller` node in default `mode="train"`. Used during training (the orchestrator pushes `genome_json` and `target_x/y` per episode). |
 | `train.launch.py` | Brings up the `orchestrator` with parameters from `config/ga_params.yaml`. This is the training command. |
-| `demo_best.launch.py` | Brings up the controller loading a specific genome (`genome:=path/to/file.json`). For demoing the best individual after training. |
+| `demo_best.launch.py` | Brings up `gp_controller` in `mode="ctf"`, loads a saved genome from disk into `genome_json`, and sets the CTF base/flag coordinates. `genome:=path/to/file.json` (default `genomes/best.json`). This is the **CTF mission runner** for an evolved genome. |
 
 ### `config/` — parameters
 

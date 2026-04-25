@@ -50,8 +50,11 @@ orchestrator:
 
     # --- Fitness (casos por cenário, em ordem preservada pelo lexicase) ---
     # Opções em fitness.py → ALL_METRICS: (dist_min_alvo_neg,
-    # alcancou_alvo, colisoes_neg). Remover entradas para simplificar.
-    enabled_metrics: ["dist_min_alvo_neg", "alcancou_alvo", "colisoes_neg"]
+    # dist_mean_alvo_neg, alcancou_alvo, colisoes_neg).
+    # dist_mean_alvo_neg premia perseguição sustentada (média da distância
+    # em todo o episódio) — complementa dist_min, que só olha o melhor
+    # instante e pode ser "gamed" por aproximações sortudas.
+    enabled_metrics: ["dist_min_alvo_neg", "dist_mean_alvo_neg", "alcancou_alvo", "colisoes_neg"]
 
     # --- Cenários ---
     # Lista JSON de {name, start:[x,y,yaw], target:[x,y]}. Cada cenário
@@ -71,6 +74,21 @@ orchestrator:
     # 1.0 = tempo-real. No WSL com software rendering o Fortress fica
     # CPU-bound a ~50%, então pedir >1 não tem efeito (é clampado).
     real_time_factor: 1.0
+
+    # --- Seeding (opcional) ---
+    # Lista de genomas JSON injetados no início da gen 0; o resto da
+    # população é random. Lista vazia `[]` = gen 0 100% random (Koza
+    # clássico). Os dois defaults abaixo são go-to-goal triviais:
+    #   1) sem obstáculo: vira para o alvo e anda
+    #   2) com avoidance: se obstaculo_frente, gira; senão item 1
+    # Servem como âncora para o lexicase — acelera os primeiros
+    # crossovers em vez de esperar a evolução descobrir "vira para o
+    # alvo" sozinha. Para voltar ao random puro use `seeds_json: [""]`
+    # (strings vazias são filtradas; rclpy exige lista não-vazia para
+    # inferir STRING_ARRAY em vez de BYTE_ARRAY).
+    seeds_json:
+      - '{"op":"IF","cond":{"term":"alvo_frente"},"then":{"leaf":"FRENTE","dur_ms":200},"else":{"op":"IF","cond":{"term":"alvo_esq"},"then":{"leaf":"GIRA_ESQ","dur_ms":150},"else":{"leaf":"GIRA_DIR","dur_ms":150}}}'
+      - '{"op":"IF","cond":{"term":"obstaculo_frente"},"then":{"leaf":"GIRA_ESQ","dur_ms":150},"else":{"op":"IF","cond":{"term":"alvo_frente"},"then":{"leaf":"FRENTE","dur_ms":200},"else":{"op":"IF","cond":{"term":"alvo_esq"},"then":{"leaf":"GIRA_ESQ","dur_ms":150},"else":{"leaf":"GIRA_DIR","dur_ms":150}}}}'
 
     # --- Saída ---
     output_dir: "genomes"

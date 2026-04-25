@@ -14,13 +14,13 @@ def test_node_type_for_each_kind():
     assert g.node_type({"term": "alvo_proximo"}) == "Bool"
     assert g.node_type({"term": "dist_frente"}) == "Float"
     assert g.node_type({"erc": 0.1}) == "Float"
-    assert g.node_type({"leaf": "FRENTE", "dur_ms": 500}) == "Action"
+    assert g.node_type({"leaf": "FRENTE", "dur_ms": 200}) == "Action"
     assert g.node_type({"op": "AND",
                         "a": {"term": "obstaculo_frente"},
                         "b": {"term": "obstaculo_esq"}}) == "Bool"
     assert g.node_type({"op": "IF",
                         "cond": {"term": "alvo_atras"},
-                        "then": {"leaf": "FRENTE", "dur_ms": 500},
+                        "then": {"leaf": "FRENTE", "dur_ms": 200},
                         "else": {"leaf": "RE", "dur_ms": 200}}) == "Action"
 
 
@@ -41,7 +41,7 @@ def test_size_and_depth_of_leaf():
 def test_size_and_depth_of_if_tree():
     tree = {"op": "IF",
             "cond": {"term": "alvo_atras"},
-            "then": {"leaf": "FRENTE", "dur_ms": 500},
+            "then": {"leaf": "FRENTE", "dur_ms": 200},
             "else": {"leaf": "RE", "dur_ms": 200}}
     assert g.size(tree) == 4
     assert g.depth(tree) == 2
@@ -54,7 +54,7 @@ def test_size_and_depth_of_if_tree():
 def test_iter_subtrees_yields_all_with_paths():
     tree = {"op": "IF",
             "cond": {"term": "alvo_atras"},
-            "then": {"leaf": "FRENTE", "dur_ms": 500},
+            "then": {"leaf": "FRENTE", "dur_ms": 200},
             "else": {"leaf": "RE", "dur_ms": 200}}
     items = list(g.iter_subtrees(tree))
     paths = [p for p, _, _ in items]
@@ -66,7 +66,7 @@ def test_iter_subtrees_yields_all_with_paths():
 def test_get_at_round_trips_paths():
     tree = {"op": "IF",
             "cond": {"term": "alvo_atras"},
-            "then": {"leaf": "FRENTE", "dur_ms": 500},
+            "then": {"leaf": "FRENTE", "dur_ms": 200},
             "else": {"leaf": "RE", "dur_ms": 200}}
     assert g.get_at(tree, ()) is tree
     assert g.get_at(tree, ("cond",))["term"] == "alvo_atras"
@@ -76,7 +76,7 @@ def test_get_at_round_trips_paths():
 def test_set_at_does_not_mutate_original():
     tree = {"op": "IF",
             "cond": {"term": "alvo_atras"},
-            "then": {"leaf": "FRENTE", "dur_ms": 500},
+            "then": {"leaf": "FRENTE", "dur_ms": 200},
             "else": {"leaf": "RE", "dur_ms": 200}}
     new = g.set_at(tree, ("then",), {"leaf": "GIRA_ESQ", "dur_ms": 300})
     assert new["then"]["leaf"] == "GIRA_ESQ"
@@ -84,7 +84,7 @@ def test_set_at_does_not_mutate_original():
 
 
 def test_set_at_root_returns_new_subtree():
-    tree = {"leaf": "FRENTE", "dur_ms": 500}
+    tree = {"leaf": "FRENTE", "dur_ms": 200}
     new = g.set_at(tree, (), {"leaf": "RE", "dur_ms": 100})
     assert new == {"leaf": "RE", "dur_ms": 100}
 
@@ -150,7 +150,7 @@ def test_validate_rejects_missing_op_children():
     with pytest.raises(ValueError):
         g.validate({"op": "IF",
                     "cond": {"term": "alvo_atras"},
-                    "then": {"leaf": "FRENTE", "dur_ms": 500}})
+                    "then": {"leaf": "FRENTE", "dur_ms": 200}})
         # missing "else"
 
 
@@ -161,7 +161,7 @@ def test_validate_rejects_duration_below_minimum():
 
 def test_validate_rejects_duration_above_maximum():
     with pytest.raises(ValueError):
-        g.validate({"leaf": "FRENTE", "dur_ms": 5000})
+        g.validate({"leaf": "FRENTE", "dur_ms": 2000})
 
 
 def test_validate_rejects_erc_out_of_range():
@@ -180,7 +180,7 @@ def test_validate_accepts_well_formed_tree():
                          "a": {"term": "dist_frente"},
                          "b": {"erc": 0.3}},
                 "then": {"leaf": "GIRA_ESQ", "dur_ms": 200},
-                "else": {"leaf": "FRENTE", "dur_ms": 400}})
+                "else": {"leaf": "FRENTE", "dur_ms": 200}})
 
 
 # --------------------------------------------------------------------------
@@ -206,7 +206,7 @@ def test_from_json_validates():
 # --------------------------------------------------------------------------
 
 def test_evaluate_leaf_returns_action_and_duration():
-    assert g.evaluate({"leaf": "FRENTE", "dur_ms": 500}, {}) == ("FRENTE", 500)
+    assert g.evaluate({"leaf": "FRENTE", "dur_ms": 200}, {}) == ("FRENTE", 200)
 
 
 def test_evaluate_if_picks_then_vs_else_by_condition():
@@ -224,9 +224,9 @@ def test_evaluate_lt_against_erc():
                      "a": {"term": "dist_frente"},
                      "b": {"erc": 0.3}},
             "then": {"leaf": "GIRA_ESQ", "dur_ms": 200},
-            "else": {"leaf": "FRENTE", "dur_ms": 400}}
+            "else": {"leaf": "FRENTE", "dur_ms": 200}}
     assert g.evaluate(tree, {"dist_frente": 0.1}) == ("GIRA_ESQ", 200)
-    assert g.evaluate(tree, {"dist_frente": 0.5}) == ("FRENTE", 400)
+    assert g.evaluate(tree, {"dist_frente": 0.5}) == ("FRENTE", 200)
 
 
 def test_evaluate_composed_and_or_not():

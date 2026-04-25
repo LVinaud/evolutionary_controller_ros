@@ -140,6 +140,7 @@ def run_ga(
     elite_k: int = 1,
     include_parsimony: bool = False,
     on_generation: Callable | None = None,
+    seeds: list | None = None,
 ) -> dict:
     """Run the GA and return the best individual across all generations.
 
@@ -153,7 +154,8 @@ def run_ga(
     logging and checkpointing without coupling this function to I/O.
     """
     pop = p.init_population(rng, pop_size, init_max_depth,
-                            op_prob=init_op_prob, erc_prob=init_erc_prob)
+                            op_prob=init_op_prob, erc_prob=init_erc_prob,
+                            seeds=seeds)
     best_tree = None
     best_mean = -float("inf")
 

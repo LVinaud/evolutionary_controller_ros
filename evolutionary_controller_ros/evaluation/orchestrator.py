@@ -95,6 +95,12 @@ class Orchestrator(Node):
         )
         self.declare_parameter("output_dir", "genomes")
         self.declare_parameter("real_time_factor", 1.0)
+        # --- Seeding (optional) ---
+        # List of genome JSON strings injected as the first individuals of
+        # gen 0. Empty strings are filtered out, so a list like [""] means
+        # "fully random init" (historical behavior). The `[""]` sentinel
+        # exists because rclpy infers BYTE_ARRAY from an empty-list default.
+        self.declare_parameter("seeds_json", [""])
 
     # ----------------------------------------------------------------------
 
@@ -161,6 +167,12 @@ class Orchestrator(Node):
             (out_dir / f"gen_{gen:03d}_best.json").write_text(g.to_json(pop[best_idx]))
             (out_dir / "best.json").write_text(g.to_json(pop[best_idx]))
 
+        seeds = [g.from_json(s) for s in
+                 self.get_parameter("seeds_json").value if s]
+        if seeds:
+            self.get_logger().info(
+                f"seeding gen 0 with {len(seeds)} hand-crafted genome(s)")
+
         best = alg.run_ga(
             rng,
             evaluator=evaluator,
@@ -171,6 +183,7 @@ class Orchestrator(Node):
             init_erc_prob=float(self.get_parameter("init_erc_prob").value),
             crossover_rate=float(self.get_parameter("crossover_rate").value),
             elite_k=int(self.get_parameter("elite_k").value),
+            seeds=seeds or None,
             on_generation=on_gen,
         )
 

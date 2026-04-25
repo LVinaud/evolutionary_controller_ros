@@ -84,7 +84,10 @@ OP_CHILD_KEYS = {
 
 ERC_RANGE = (-1.0, 1.0)
 DURATION_MIN_MS = 50
-DURATION_MAX_MS = 1000
+# Upper bound chosen so a single FRENTE action at v=0.4 m/s covers at most
+# ~12cm of blind motion — smaller than reach_radius_m (0.5m), so a tree
+# that homes in on the target doesn't overshoot past it between decisions.
+DURATION_MAX_MS = 300
 
 
 # ==========================================================================

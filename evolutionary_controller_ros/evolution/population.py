@@ -53,11 +53,22 @@ def init_population(
     *,
     op_prob: float = 0.5,
     erc_prob: float = 0.3,
+    seeds: list | None = None,
 ) -> list:
-    """Return `size` random Action-rooted trees using grow initialization."""
-    return [g.random_tree(rng, max_depth, "Action",
-                          op_prob=op_prob, erc_prob=erc_prob)
-            for _ in range(size)]
+    """Return `size` Action-rooted trees — optionally seeded.
+
+    When `seeds` is provided (list of genome dicts), the first
+    `min(len(seeds), size)` individuals are deep-copied from `seeds`; the
+    remainder is filled with random grow-initialized trees. `seeds=None`
+    or `[]` means "fully random" — the historical behavior.
+    """
+    import copy
+    seeds = seeds or []
+    out = [copy.deepcopy(s) for s in seeds[:size]]
+    while len(out) < size:
+        out.append(g.random_tree(rng, max_depth, "Action",
+                                 op_prob=op_prob, erc_prob=erc_prob))
+    return out
 
 
 # ==========================================================================
