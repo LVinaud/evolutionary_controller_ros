@@ -24,8 +24,11 @@ set -euo pipefail
 
 PORT=8000
 WS_DIR="${HOME}/ros2_ws"
+# Both repos are public — using https:// so a fresh lab PC without an
+# SSH key on GitHub still clones cleanly. Override at the command line
+# (--evo-repo, --prm-repo) if a private fork is needed.
 PRM_REPO="https://github.com/matheusbg8/prm_2026.git"
-EVO_REPO="git@github.com:LVinaud/evolutionary_controller_ros.git"
+EVO_REPO="https://github.com/LVinaud/evolutionary_controller_ros.git"
 EVO_BRANCH="parallelism-experiments"   # branch where worker_server lives
 
 while [[ $# -gt 0 ]]; do
@@ -33,6 +36,8 @@ while [[ $# -gt 0 ]]; do
         --port) PORT="$2"; shift 2 ;;
         --ws-dir) WS_DIR="$2"; shift 2 ;;
         --evo-branch) EVO_BRANCH="$2"; shift 2 ;;
+        --evo-repo) EVO_REPO="$2"; shift 2 ;;
+        --prm-repo) PRM_REPO="$2"; shift 2 ;;
         *) echo "unknown arg: $1"; exit 1 ;;
     esac
 done
