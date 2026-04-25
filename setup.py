@@ -24,6 +24,10 @@ setup(
         'console_scripts': [
             'gp_controller = evolutionary_controller_ros.controllers.gp_controller:main',
             'orchestrator = evolutionary_controller_ros.evaluation.orchestrator:main',
+            # Optional HTTP-based parallel mode. Requires extra pip deps —
+            # see README ("Optional: parallel evaluation across machines").
+            'worker_server = evolutionary_controller_ros.evaluation.worker_server:main',
+            'coordinator = evolutionary_controller_ros.evaluation.coordinator:main',
         ],
     },
 )

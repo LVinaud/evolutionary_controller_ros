@@ -130,7 +130,8 @@ def assemble_case_matrix(
 def run_ga(
     rng: random.Random,
     *,
-    evaluator: Callable[[dict], list],
+    evaluator: Callable[[dict], list] | None = None,
+    evaluator_batch: Callable[[list], list] | None = None,
     pop_size: int = 20,
     n_generations: int = 30,
     init_max_depth: int = 5,
@@ -146,15 +147,26 @@ def run_ga(
 ) -> dict:
     """Run the GA and return the best individual across all generations.
 
-    `evaluator(tree) -> list[float]` is supplied by the caller (the ROS
-    episode runner in production; a pure-Python stub in tests). It returns
-    a vector of fitness cases, all "larger is better". Tree size is added
-    automatically as an extra case when `include_parsimony=True`.
+    Either `evaluator` or `evaluator_batch` must be provided (not both).
+
+    `evaluator(tree) -> list[float]` evaluates one tree at a time. This is
+    the path used by `orchestrator.py` (single-host) and unit tests — a
+    plain serial loop calls it once per individual.
+
+    `evaluator_batch(population) -> list[list[float]]` evaluates the entire
+    population in one call. This exists for parallel coordinators (see
+    `evaluation/coordinator.py`) that fan out evaluations to a worker pool
+    via HTTP, where exposing the full batch lets them dispatch many
+    requests concurrently before blocking. The returned list must align
+    with the input population by index.
 
     `on_generation(gen_idx, pop, case_matrix, best_idx)` is an optional
     callback invoked once per generation after evaluation; useful for
     logging and checkpointing without coupling this function to I/O.
     """
+    if (evaluator is None) == (evaluator_batch is None):
+        raise ValueError(
+            "exactly one of evaluator/evaluator_batch must be supplied")
     t0 = time.monotonic()
     pop = p.init_population(rng, pop_size, init_max_depth,
                             op_prob=init_op_prob, erc_prob=init_erc_prob,
@@ -167,7 +179,10 @@ def run_ga(
 
     for gen in range(n_generations):
         t_eval = time.monotonic()
-        base_cases = [evaluator(tree) for tree in pop]
+        if evaluator_batch is not None:
+            base_cases = evaluator_batch(pop)
+        else:
+            base_cases = [evaluator(tree) for tree in pop]
         if timing_log is not None:
             timing_log.event("ga_eval_population", time.monotonic() - t_eval,
                              gen=gen, pop_size=pop_size)

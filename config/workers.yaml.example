@@ -1,0 +1,25 @@
+# Worker pool definition for the HTTP-coordinated GA.
+#
+# Each entry is one machine running:
+#     - Gazebo (prm_2026 world)
+#     - the prm_2026 robot stack
+#     - gp_controller
+#     - worker_server (this package)  -- bound to the URL below
+#
+# The coordinator dispatches one /evaluate POST per individual to one of
+# these URLs in round-robin order, opening N=len(workers) connections in
+# parallel. Adding/removing a machine = editing this file.
+#
+# Use plain http://; the workers do not require TLS. For LAN-only setups
+# this is fine. If running across an untrusted network, put nginx+TLS in
+# front of each worker_server (out of scope for this package).
+
+workers:
+  - url: http://lab-pc-02.local:8000
+  - url: http://lab-pc-03.local:8000
+  - url: http://lab-pc-04.local:8000
+  - url: http://lab-pc-05.local:8000
+  - url: http://lab-pc-06.local:8000
+
+# Tip: replace `.local` with explicit IPs (192.168.0.X) when the LAN
+# does not have mDNS, or use /etc/hosts to alias them.

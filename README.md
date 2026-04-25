@@ -99,6 +99,7 @@ One ROS node serves both modes. The orchestrator never restarts it; instead:
 - Gazebo Fortress (`ign gazebo` 6.x)
 - `prm_2026` package cloned into `src/` of the same workspace
 - Python 3.10+, numpy, scipy, opencv (already shipped with ROS Humble)
+- **Optional (only for the parallel mode):** `pip install fastapi uvicorn pydantic httpx pyyaml`. Workers need fastapi/uvicorn/pydantic; coordinator needs httpx/pyyaml. Skip if you only run the single-machine flow.
 
 ## Build
 
@@ -162,6 +163,119 @@ ros2 launch evolutionary_controller_ros demo_best.launch.py \
 
 All overridable args: `genome`, `own_base_x/y`, `enemy_base_x/y`, `enemy_flag_x/y`, `phase_reach_radius_m` (≤ this distance from a phase target → advance), `grab_reach_m` (≤ this distance from the flag → PEGAR).
 
+## Optional: parallel evaluation across machines
+
+Training is dominated by Gazebo wall-time — the [timing audit](docs/timing_report_20260425.md) shows ~88 % of a generation is spent in `episode_spin` and 100 % is bound to a single Gazebo process. With `pop_size=20`, one generation takes ~55 min on a single WSL machine. Spreading individuals across N PCs (each running its own Gazebo) gives near-linear speedup until N reaches `pop_size`.
+
+This is an **optional** alternative entry point. The single-machine flow above (`orchestrator` calling `gp_controller` in-process) keeps working untouched. If you don't have a fleet of lab PCs, ignore this whole section.
+
+### Architecture
+
+```
+COORDINATOR (one machine — your laptop)            WORKER PC (× N)
+─────────────────────                             ──────────────────────────
+                                                  Gazebo (prm_2026 world)
+coordinator.py                                    prm_2026 robot stack
+   │                                              gp_controller
+   │  POST /evaluate                              worker_server  (HTTP :8000)
+   │ ─────────────────────────────────────────►       │
+   │  {genome_json, scenario, world}                  │ runs run_episode(...)
+   │                                                  │
+   │ ◄─────────────────────────────────────────       │ returns case_vector
+   │  HTTP 200 + {case_vector, history}               ▼
+   ▼
+GA loop (lexicase, breeding) — pure Python
+```
+
+The coordinator does **not** run Gazebo and does **not** even import `rclpy`. It is pure Python with `httpx`, `pyyaml`, and a `ThreadPoolExecutor`. Each worker is a fully isolated ROS environment — there is **no DDS traffic between machines**, no namespacing pain, no discovery server. The only thing that crosses the LAN is HTTP request/response payloads (~5 kB each).
+
+A single failure on any worker (timeout, connection refused, HTTP 5xx) is retried up to `--retries` times on a different worker. Persistent failure marks the individual with a sentinel "very bad" case vector that lexicase rejects, so the GA continues without crashing.
+
+### Setting up a worker PC
+
+On every machine that will act as a worker, run the bootstrap script (one-shot):
+
+```bash
+bash scripts/bootstrap_worker.sh
+```
+
+It installs ROS2 Humble + Gazebo bridges, the four pip deps (`fastapi`, `uvicorn`, `pydantic`, `httpx`), clones `prm_2026` and this package, and `colcon build`s. Then bring up four terminals (tmux strongly recommended) on that worker PC:
+
+```bash
+# every terminal first:
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/local_setup.bash
+export LIBGL_ALWAYS_SOFTWARE=1   # only on WSL
+
+# Terminal 1 — Gazebo
+ros2 launch prm_2026 inicia_simulacao.launch.py
+# Terminal 2 — Robot
+ros2 launch prm_2026 carrega_robo.launch.py
+# Terminal 3 — gp_controller
+ros2 run evolutionary_controller_ros gp_controller
+# Terminal 4 — worker_server (the HTTP face)
+ros2 run evolutionary_controller_ros worker_server --port 8000
+```
+
+To smoke-test from any other machine on the LAN:
+
+```bash
+curl http://<worker-ip>:8000/health
+# → {"status":"idle","uptime_s":3.4,"last_eval_s":0.0}
+```
+
+### Setting up the coordinator
+
+On the coordinator machine (does not need to be a worker — your laptop is fine):
+
+```bash
+pip install httpx pyyaml
+```
+
+Copy `config/workers.yaml.example` to `config/workers.yaml` and fill in your worker URLs:
+
+```yaml
+workers:
+  - url: http://lab-pc-02:8000
+  - url: http://lab-pc-03:8000
+```
+
+Run training:
+
+```bash
+ros2 run evolutionary_controller_ros coordinator \
+    --workers config/workers.yaml \
+    --params install/evolutionary_controller_ros/share/evolutionary_controller_ros/config/ga_params.yaml \
+    --output-dir genomes/
+```
+
+(or invoke as a plain Python module if the coordinator host doesn't have ROS installed: `python3 -m evolutionary_controller_ros.evaluation.coordinator --workers ... --params ...`).
+
+The output layout is identical to the single-machine case (`best.json`, per-gen checkpoints, timing CSV — this one prefixed `timing_http_<ts>.csv`).
+
+### HTTP API of `worker_server`
+
+| Method + path | Purpose |
+|---|---|
+| `POST /evaluate` | Body: `EvaluateRequest` (see `worker_server.py`). Returns `case_vector`, `history`, and `wall_time_s`. Returns HTTP 503 if the worker is currently processing another evaluation. |
+| `GET /health` | Returns `{"status": "idle"\|"busy", "uptime_s": float, "last_eval_s": float}`. The coordinator pings this at startup to verify each worker is reachable. |
+
+The full request/response schema is the Pydantic model in [`worker_server.py`](evolutionary_controller_ros/evaluation/worker_server.py). Any service that implements the same contract is a drop-in replacement worker — this is the seam that makes turning this into a generic ROS-evolutionary framework realistic.
+
+### Expected speedup
+
+From the audit:
+
+| Workers | Time per generation (`pop_size=20`) | Full 30-gen run |
+|---:|---:|---:|
+| 1 (single-machine) | ~55 min | ~27.5 h |
+| 2 | ~28 min | ~14 h |
+| 5 | ~11 min | ~5.5 h |
+| 10 | ~6 min | ~2.8 h |
+| 20 | ~3 min | ~1.4 h |
+
+Saturates when `n_workers ≥ pop_size` — at that point each worker handles one individual per generation and adding more workers does nothing.
+
 ## Full structure, file by file
 
 ### Package root
@@ -190,7 +304,8 @@ Use with `ros2 launch evolutionary_controller_ros <file>`.
 
 | File | Purpose |
 |---|---|
-| `ga_params.yaml` | Orchestrator parameters: GA settings (pop, generations, crossover/elite/seed), episode settings (duration, tick), collision/deploy radii, exploration grid, scenarios JSON. |
+| `ga_params.yaml` | Orchestrator parameters: GA settings (pop, generations, crossover/elite/seed), episode settings (duration, tick), collision/deploy radii, scenarios JSON, optional `seeds_json`. Consumed by both single-machine `orchestrator` and HTTP `coordinator`. |
+| `workers.yaml.example` | Template for the **optional** parallel mode: list of worker URLs the coordinator should dispatch evaluations to. Copy to `workers.yaml` and edit. Not used by the single-machine flow. |
 | `neat_config.ini` | Legacy placeholder; not used by the GP pipeline. Delete if it stays unused. |
 
 ### `evolutionary_controller_ros/` — Python code
@@ -231,8 +346,11 @@ evolutionary_controller_ros/
 |---|---|
 | `__init__.py` | Empty. |
 | `world_reset.py` | Thin wrappers around `ign service` / `ign topic`: `set_model_pose(world, name, x, y, yaw)` for teleports, `query_model_poses(world)` to snapshot every model's pose from `/world/<name>/pose/info`. |
-| `episode.py` | `run_episode(node, genome_tree, scenario, world) → history` — drives one scenario through the (long-running) `gp_controller`. Pushes genome+poses via `SetParameters`, calls `/gp_controller/reset`, teleports robot+flag, spins, collects the history dict that `fitness.py` consumes. |
-| `orchestrator.py` | ROS2 node (`ros2 run ... orchestrator`). Queries target poses from the world, builds `WorldConfig`+scenarios, runs the GA with a per-tree evaluator that concatenates fitness vectors across all scenarios, saves the champion. |
+| `episode.py` | `run_episode(node, genome_tree, scenario, world) → history` — drives one scenario through the (long-running) `gp_controller`. Pushes genome+poses via `SetParameters`, calls `/gp_controller/reset`, teleports robot+flag, spins, collects the history dict that `fitness.py` consumes. Optional `timing_log=` records per-phase wall times. |
+| `orchestrator.py` | ROS2 node (`ros2 run ... orchestrator`). **Default single-machine entry point.** Queries target poses from the world, builds `WorldConfig`+scenarios, runs the GA with a per-tree evaluator that concatenates fitness vectors across all scenarios, saves the champion + per-gen checkpoints + timing CSV. |
+| `worker_server.py` | **Optional parallel mode.** ROS2 node (`ros2 run ... worker_server`) that wraps `run_episode` behind a small FastAPI app on port 8000. One per worker PC. Exposes `POST /evaluate` and `GET /health`. |
+| `coordinator.py` | **Optional parallel mode.** Pure-Python driver (`ros2 run ... coordinator` or `python3 -m ...evaluation.coordinator`). Reads a workers.yaml + ga_params.yaml, dispatches population evaluation across the worker pool over HTTP, runs the same GA loop. No `rclpy` dependency on the coordinator host. |
+| `timing.py` | Append-only event log used by `algorithm.run_ga`, `episode.run_episode`, and the orchestrator/coordinator to record per-phase wall times. Dumps to a CSV consumable by pandas/matplotlib. |
 
 #### `utils/` — shared helpers
 
@@ -247,11 +365,12 @@ The `orchestrator` writes the champion here (`best.json`). The `.gitkeep` keeps 
 
 ### `scripts/` — tools outside ROS
 
-Standalone scripts that run with `python3 scripts/<name>.py`. They do not become `ros2 run` commands.
+Standalone scripts. Run with `python3 scripts/<name>.py` or `bash scripts/<name>.sh`. Not registered as `ros2 run` commands.
 
 | File | Purpose |
 |---|---|
-| `plot_fitness.py` | (Planned) Reads the training log and plots the evolution curve with matplotlib. |
+| `smoke_pipeline.py` | End-to-end sanity check of the pure-Python evolution stack (population init, mutation, crossover, GA loop with a synthetic evaluator). No ROS, no Gazebo. Run before pushing to make sure the GP layer still composes. |
+| `bootstrap_worker.sh` | One-shot installer for a fresh Ubuntu 22.04 box that will act as a worker PC: installs ROS2 Humble + Gazebo bridges, pip deps for `worker_server`, clones `prm_2026` and this package, `colcon build`s, prints how to bring up the four required terminals. Idempotent. |
 
 ### `test/` — unit tests
 
