@@ -191,67 +191,148 @@ The coordinator does **not** run Gazebo and does **not** even import `rclpy`. It
 
 A single failure on any worker (timeout, connection refused, HTTP 5xx) is retried up to `--retries` times on a different worker. Persistent failure marks the individual with a sentinel "very bad" case vector that lexicase rejects, so the GA continues without crashing.
 
-### Setting up a worker PC
+### End-to-end recipe: from zero to a running parallel training
 
-On every machine that will act as a worker, run the bootstrap script (one-shot):
+If you have never run this before, follow these steps in order. There are two roles of machine: **the coordinator** (one machine, your laptop) and **a worker** (every other machine, the lab PCs).
+
+#### One-time setup on the coordinator (your laptop)
+
+Done once per laptop, never again unless you reformat:
 
 ```bash
+# 1. Get the code (skip if you already have it).
+cd ~ && git clone -b parallelism-experiments \
+    git@github.com:LVinaud/evolutionary_controller_ros.git
+
+# 2. Install the two pip deps. The coordinator does NOT need ROS,
+#    NOT need Gazebo, and never opens a TCP port — it only initiates
+#    outgoing HTTP, so it works behind any home/lab firewall.
+pip install httpx pyyaml
+
+# 3. Copy the workers template and fill in your worker IPs.
+cd ~/evolutionary_controller_ros
+cp config/workers.yaml.example config/workers.yaml
+$EDITOR config/workers.yaml
+```
+
+#### One-time setup on each worker PC (lab machines)
+
+Done once per machine. The bootstrap script handles ROS install, pip deps, building, and prints the four commands you must keep alive each session:
+
+```bash
+# 1. Get the code.
+cd ~ && git clone -b parallelism-experiments \
+    git@github.com:LVinaud/evolutionary_controller_ros.git
+
+# 2. Run bootstrap. Idempotent — re-run is safe.
+cd ~/evolutionary_controller_ros
 bash scripts/bootstrap_worker.sh
 ```
 
-It installs ROS2 Humble + Gazebo bridges, the four pip deps (`fastapi`, `uvicorn`, `pydantic`, `httpx`), clones `prm_2026` and this package, and `colcon build`s. Then bring up four terminals (tmux strongly recommended) on that worker PC:
+After the script ends, note this PC's IP (it prints `hostname -I`'s output) — it goes into the coordinator's `workers.yaml`.
+
+#### Per-session: bring up each worker (every time you train)
+
+On **every worker PC**, open four terminals (tmux strongly recommended so you can detach and the session survives a SSH disconnect):
 
 ```bash
-# every terminal first:
+# All four terminals first source the workspace and set the WSL flag.
 source /opt/ros/humble/setup.bash
 source ~/ros2_ws/install/local_setup.bash
-export LIBGL_ALWAYS_SOFTWARE=1   # only on WSL
+export LIBGL_ALWAYS_SOFTWARE=1   # only needed on WSL
 
-# Terminal 1 — Gazebo
+# Terminal 1 — Gazebo + bridge (heavy, may take 15–30s to settle)
 ros2 launch prm_2026 inicia_simulacao.launch.py
-# Terminal 2 — Robot
+
+# Terminal 2 — Robot + ros2_control + RViz
 ros2 launch prm_2026 carrega_robo.launch.py
-# Terminal 3 — gp_controller
+
+# Terminal 3 — gp_controller (default mode "train"; orchestrator/coordinator
+# pushes genome_json + target_x/y per episode via SetParameters)
 ros2 run evolutionary_controller_ros gp_controller
-# Terminal 4 — worker_server (the HTTP face)
+
+# Terminal 4 — worker_server (this is what the coordinator talks to)
 ros2 run evolutionary_controller_ros worker_server --port 8000
 ```
 
-To smoke-test from any other machine on the LAN:
+Quick smoke check that the worker is reachable from your laptop:
 
 ```bash
+# from the coordinator (your laptop):
 curl http://<worker-ip>:8000/health
-# → {"status":"idle","uptime_s":3.4,"last_eval_s":0.0}
+# → {"status":"idle","uptime_s":12.4,"last_eval_s":0.0}
 ```
 
-### Setting up the coordinator
+If `curl` hangs or refuses connection → see the WSL networking note below.
 
-On the coordinator machine (does not need to be a worker — your laptop is fine):
+#### Per-session: start the coordinator (your laptop)
+
+Once `curl /health` works for every worker in `workers.yaml`, start training:
 
 ```bash
-pip install httpx pyyaml
-```
+cd ~/evolutionary_controller_ros
 
-Copy `config/workers.yaml.example` to `config/workers.yaml` and fill in your worker URLs:
-
-```yaml
-workers:
-  - url: http://lab-pc-02:8000
-  - url: http://lab-pc-03:8000
-```
-
-Run training:
-
-```bash
+# Either as a ROS executable (if your laptop happens to have ROS):
 ros2 run evolutionary_controller_ros coordinator \
     --workers config/workers.yaml \
-    --params install/evolutionary_controller_ros/share/evolutionary_controller_ros/config/ga_params.yaml \
+    --params install/.../config/ga_params.yaml \
+    --output-dir genomes/
+
+# Or as a plain Python module (if your laptop has no ROS — same effect):
+python3 -m evolutionary_controller_ros.evaluation.coordinator \
+    --workers config/workers.yaml \
+    --params config/ga_params.yaml \
     --output-dir genomes/
 ```
 
-(or invoke as a plain Python module if the coordinator host doesn't have ROS installed: `python3 -m evolutionary_controller_ros.evaluation.coordinator --workers ... --params ...`).
+What you'll see on the coordinator:
 
-The output layout is identical to the single-machine case (`best.json`, per-gen checkpoints, timing CSV — this one prefixed `timing_http_<ts>.csv`).
+```
+[coord] 5 workers, pop=20 gens=30
+[coord] timing log: genomes/timing_http_<timestamp>.csv
+[coord] health check...
+  http://lab-pc-02:8000  →  {'status': 'idle', 'uptime_s': ...}
+  ...
+[coord] gen 0 done: best_mean=-3.21 avg=-7.4 best_size=14
+[coord] gen 1 done: best_mean=-2.85 avg=-6.9 best_size=18
+...
+[coord] champion saved to genomes/best.json
+```
+
+Per-generation checkpoints (`gen_NNN_best.json`) and the all-time `best.json` go into `--output-dir`. A timing CSV with one row per HTTP-call goes there too — same schema as the single-machine timing audit, plus a `worker` column.
+
+#### Per-session: stopping
+
+`Ctrl+C` on the coordinator. Workers stay alive and idle, ready for the next session — no need to tear down Gazebo each time. Re-running the coordinator is enough.
+
+To take a worker offline cleanly, `Ctrl+C` Terminal 4 (`worker_server`) on that machine; the coordinator will see `connect refused` on the next dispatch and retry/redirect to other workers.
+
+### WSL on worker PCs — networking gotcha
+
+WSL2 by default runs on a private virtual NIC (`172.x.x.x`), so the Windows host sees the WSL but no other PC on the LAN can reach the WSL directly. Two ways out:
+
+**Option A — port forwarding (works everywhere).** In a PowerShell prompt **as administrator** on the Windows host:
+
+```powershell
+$wslIp = (wsl hostname -I).Trim().Split(' ')[0]
+netsh interface portproxy add v4tov4 listenport=8000 listenaddress=0.0.0.0 `
+  connectport=8000 connectaddress=$wslIp
+netsh advfirewall firewall add rule name="wsl_evaluator" `
+  dir=in action=allow protocol=TCP localport=8000
+```
+
+After this, the worker's URL in `workers.yaml` is the **Windows** IP (e.g. `http://192.168.0.42:8000`), not the WSL one. WSL2 changes its private IP at every reboot, so add the two `netsh` commands to a Windows scheduled task (or run them manually once before each training session).
+
+**Option B — mirrored networking (Windows 11 22H2+).** Add to `%USERPROFILE%\.wslconfig`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+Then `wsl --shutdown` and reopen WSL. Now WSL shares the Windows NIC; the worker's IP equals the host's IP and no port forwarding is needed. Cleaner if your Windows version supports it.
+
+The coordinator side has no equivalent issue — it only makes outgoing HTTP, never accepts inbound. Your laptop on WSL is fine as a coordinator without any of this.
 
 ### HTTP API of `worker_server`
 
