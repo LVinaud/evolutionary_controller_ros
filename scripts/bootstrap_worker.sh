@@ -24,8 +24,11 @@ set -eo pipefail
 
 PORT=8000
 WS_DIR="${HOME}/ros2_ws"
+# Both repos are public — using https:// so a fresh lab PC without an
+# SSH key on GitHub still clones cleanly. Override at the command line
+# (--evo-repo, --prm-repo) if a private fork is needed.
 PRM_REPO="https://github.com/matheusbg8/prm_2026.git"
-EVO_REPO="git@github.com:LVinaud/evolutionary_controller_ros.git"
+EVO_REPO="https://github.com/LVinaud/evolutionary_controller_ros.git"
 EVO_BRANCH="parallelism-experiments"   # branch where worker_server lives
 
 while [[ $# -gt 0 ]]; do
@@ -33,6 +36,8 @@ while [[ $# -gt 0 ]]; do
         --port) PORT="$2"; shift 2 ;;
         --ws-dir) WS_DIR="$2"; shift 2 ;;
         --evo-branch) EVO_BRANCH="$2"; shift 2 ;;
+        --evo-repo) EVO_REPO="$2"; shift 2 ;;
+        --prm-repo) PRM_REPO="$2"; shift 2 ;;
         *) echo "unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -49,7 +54,15 @@ if ! command -v ros2 >/dev/null 2>&1; then
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
         | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
     sudo apt-get update
-    sudo apt-get install -y ros-humble-desktop \
+    # Listed explicitly because some apt mirrors do not pull these in
+    # transitively from ros-humble-desktop:
+    #   ros-humble-xacro       — prm_2026 ships the robot as .urdf.xacro;
+    #                            launch fails with "file not found: 'xacro'"
+    #   ros-humble-topic-tools — prm_2026's carrega_robo.launch.py spawns
+    #                            a `relay-7` node from this package;
+    #                            launch fails with "package topic_tools
+    #                            not found"
+    sudo apt-get install -y ros-humble-desktop ros-humble-xacro ros-humble-topic-tools \
         ros-humble-ros-gz-bridge ros-humble-ros-gz-sim ros-humble-ros-gz-image \
         python3-colcon-common-extensions python3-rosdep python3-pip
     if [[ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]]; then
@@ -74,6 +87,21 @@ fi
 if [[ ! -d evolutionary_controller_ros ]]; then
     say "cloning evolutionary_controller_ros (branch ${EVO_BRANCH})"
     git clone -b "${EVO_BRANCH}" "${EVO_REPO}"
+fi
+
+# Patch the prm_2026 simulation launch to run Gazebo server-only.
+# Background: prm_2026's inicia_simulacao.launch.py invokes
+# `ign gazebo -r -v 3 <world>` and its own comment says "modo headless
+# (sem GUI)" — but the actual command is missing the `-s` flag, so the
+# GUI does start. On WSL2 (Windows 10 especially, which has no WSLg)
+# the GUI process crashes inside Qt's XCB clipboard handler, taking
+# the simulation server down with it. A worker has no use for the GUI
+# anyway, so the cleanest fix is to honour the original intent: add
+# `-s`. Idempotent: skip if already patched.
+PRM_LAUNCH="${WS_DIR}/src/prm_2026/launch/inicia_simulacao.launch.py"
+if [[ -f "${PRM_LAUNCH}" ]] && ! grep -q "'gazebo', '-s'" "${PRM_LAUNCH}"; then
+    say "patching prm_2026 launch to run Gazebo server-only (no GUI)"
+    sed -i "s|'gazebo', '-r'|'gazebo', '-s', '-r'|" "${PRM_LAUNCH}"
 fi
 
 # ---------------------------------------------------------------------- build

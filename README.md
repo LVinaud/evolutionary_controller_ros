@@ -334,6 +334,20 @@ Then `wsl --shutdown` and reopen WSL. Now WSL shares the Windows NIC; the worker
 
 The coordinator side has no equivalent issue — it only makes outgoing HTTP, never accepts inbound. Your laptop on WSL is fine as a coordinator without any of this.
 
+#### Headless Gazebo on WSL workers
+
+A second WSL gotcha, separate from the networking one: on WSL2 + Windows 10 (no WSLg), the Gazebo Fortress GUI segfaults inside Qt's XCB clipboard plugin shortly after launch, taking the simulation server down with it. The professor's `inicia_simulacao.launch.py` starts Gazebo with `ign gazebo -r ...` (GUI on) even though its own comment says "modo headless".
+
+The bootstrap script applies a one-line patch to that launch file, adding `-s` so Gazebo runs server-only — no GUI, no Qt, no crash. A worker never needs the GUI anyway. If you cloned `prm_2026` manually (not through `bootstrap_worker.sh`) and want server-only mode:
+
+```bash
+sed -i "s|'gazebo', '-r'|'gazebo', '-s', '-r'|" \
+    ~/ros2_ws/src/prm_2026/launch/inicia_simulacao.launch.py
+cd ~/ros2_ws && colcon build --symlink-install --packages-select prm_2026
+```
+
+Native Ubuntu workers and Windows 11 + WSLg workers do not need this patch — Gazebo's GUI runs cleanly there. The patch is harmless on those systems too (just suppresses the GUI window).
+
 ### HTTP API of `worker_server`
 
 | Method + path | Purpose |
