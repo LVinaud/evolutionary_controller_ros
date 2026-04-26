@@ -20,7 +20,7 @@
 # processes you must launch. The script does NOT start them — those need
 # to live in long-running terminals (tmux recommended).
 
-set -euo pipefail
+set -eo pipefail
 
 PORT=8000
 WS_DIR="${HOME}/ros2_ws"
