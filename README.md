@@ -371,6 +371,91 @@ From the audit:
 
 Saturates when `n_workers ≥ pop_size` — at that point each worker handles one individual per generation and adding more workers does nothing.
 
+## Optional: parallel evaluation through a hosted Redis (relay mode)
+
+> **Status:** experimental, lives on the `redis-relay` branch.
+
+Some lab networks (eduroam with client isolation, tightly-firewalled VLANs, networks that NAT WSL2 weirdly) block any kind of peer-to-peer connection — even on the same SSID, machine A cannot open a TCP socket to machine B. The HTTP coordinator above does not work in that situation because the coordinator needs to reach each worker on `:8000`.
+
+Way out: put a relay between them. Both sides only do **outbound HTTPS** to a hosted message queue, and the queue acts as the intermediary. Outbound HTTPS to `*.com` is virtually always allowed.
+
+### Architecture
+
+```
+COORDINATOR                    HOSTED REDIS (Upstash etc)             WORKER
+──────────────                 ────────────────────────────          ─────────
+                                                                     ┌────────┐
+redis_coordinator              ┌────────────────────┐                │ Gazebo │
+   │  RPUSH evo:jobs ─────────►│ list "evo:jobs"     │                │  + bot │
+   │                           │       (queue)       │   BLPOP        │  + GP  │
+   │                           │                     │ ──────────────►│  ctrl  │
+   │                           │                     │                │   +    │
+   │                           │                     │                │ redis_ │
+   │  BLPOP evo:results◄───────┤ list "evo:results"  │  RPUSH         │ worker │
+   │                           │                     │ ◄──────────────┤        │
+                               └────────────────────┘                 └────────┘
+```
+
+Both the coordinator and every worker only ever connect *outbound* to the Redis URL (port 6379 or 443 for `rediss://`). No firewall changes, no port forwards.
+
+### Setup
+
+1. **Create a hosted Redis.** [Upstash](https://upstash.com) free tier is plenty (10k commands/day; one of our generations is ~1k commands).
+   - Sign in with Google, "Create Database", pick a region (sa-east or us-east).
+   - Copy the `redis://` (or `rediss://` for TLS) URL.
+
+2. **On every machine** (coordinator AND each worker):
+   ```bash
+   pip install redis pyyaml
+   cp config/redis.env.example config/redis.env  # edit and paste your URL
+   source config/redis.env
+   ```
+
+3. **On each worker** — same prep as the HTTP mode (Gazebo, robot, gp_controller running on the worker box). Then:
+   ```bash
+   ros2 run evolutionary_controller_ros redis_worker
+   # ...connected to redis; waiting for jobs on 'evo:jobs'
+   ```
+
+4. **On the coordinator** (your laptop, may be totally outside the lab network):
+   ```bash
+   source config/redis.env
+   ros2 run evolutionary_controller_ros redis_coordinator \
+       --params install/.../config/ga_params.yaml \
+       --output-dir genomes/ \
+       --clear-queues
+   ```
+
+   `--clear-queues` `DEL`s `evo:jobs` and `evo:results` at startup so leftover state from a crashed previous run doesn't leak in. Use it on the first run; subsequent runs are auto-namespaced by a fresh random `run_id`.
+
+### Wire format
+
+Same `EvaluateRequest`/`EvaluateResponse` Pydantic shapes as HTTP mode, just transported via Redis lists instead of HTTP request/response. The Pydantic models live in [`worker_server.py`](evolutionary_controller_ros/evaluation/worker_server.py) but `redis_worker.py` parses raw JSON because it does not need request validation (the coordinator we trust).
+
+### Trade-offs vs HTTP mode
+
+| Axis | HTTP mode | Redis-relay mode |
+|---|---|---|
+| Inter-machine connectivity | required (TCP between PCs) | **not required** — only outbound HTTPS |
+| External dependency | none | hosted Redis (Upstash etc.) |
+| Latency overhead | one round-trip per HTTP call | two round-trips (RPUSH + BLPOP) per call |
+| Coordinator can be anywhere | LAN with workers | **anywhere with internet** |
+| Works on eduroam | only without client isolation | yes |
+| Free tier limits | n/a | Upstash free: 10k cmd/day, 256 MB |
+
+Two RPC round-trips vs one is irrelevant in practice — each round-trip is ~30ms vs the 165s of actual evaluation. The interesting trade is the dependency on a third party for a class project. Acceptable for an academic experiment, less so for production.
+
+### Running tests with fakeredis
+
+The redis-relay tests stand up an in-process `fakeredis.FakeRedis` and assert that `_evaluate_population` correctly matches results back to population slots, applies sentinels for failures, ignores stale results from older runs, and times out unresponded jobs:
+
+```bash
+pip install redis fakeredis
+python3 -m pytest test/test_redis_coordinator.py -v
+```
+
+The test suite auto-skips both these tests and the HTTP coordinator tests if the optional deps are missing.
+
 ## Full structure, file by file
 
 ### Package root
@@ -400,7 +485,8 @@ Use with `ros2 launch evolutionary_controller_ros <file>`.
 | File | Purpose |
 |---|---|
 | `ga_params.yaml` | Orchestrator parameters: GA settings (pop, generations, crossover/elite/seed), episode settings (duration, tick), collision/deploy radii, scenarios JSON, optional `seeds_json`. Consumed by both single-machine `orchestrator` and HTTP `coordinator`. |
-| `workers.yaml.example` | Template for the **optional** parallel mode: list of worker URLs the coordinator should dispatch evaluations to. Copy to `workers.yaml` and edit. Not used by the single-machine flow. |
+| `workers.yaml.example` | Template for the **optional HTTP parallel mode**: list of worker URLs the coordinator should dispatch evaluations to. Copy to `workers.yaml` (gitignored) and edit. Not used by the single-machine flow or by the Redis-relay flow. |
+| `redis.env.example` | Template for the **optional Redis-relay mode**: shell file with the `REDIS_URL` env var. Copy to `redis.env` (gitignored) and paste your hosted Redis URL. Both `redis_coordinator` and `redis_worker` read it. |
 | `neat_config.ini` | Legacy placeholder; not used by the GP pipeline. Delete if it stays unused. |
 
 ### `evolutionary_controller_ros/` — Python code
@@ -443,8 +529,10 @@ evolutionary_controller_ros/
 | `world_reset.py` | Thin wrappers around `ign service` / `ign topic`: `set_model_pose(world, name, x, y, yaw)` for teleports, `query_model_poses(world)` to snapshot every model's pose from `/world/<name>/pose/info`. |
 | `episode.py` | `run_episode(node, genome_tree, scenario, world) → history` — drives one scenario through the (long-running) `gp_controller`. Pushes genome+poses via `SetParameters`, calls `/gp_controller/reset`, teleports robot+flag, spins, collects the history dict that `fitness.py` consumes. Optional `timing_log=` records per-phase wall times. |
 | `orchestrator.py` | ROS2 node (`ros2 run ... orchestrator`). **Default single-machine entry point.** Queries target poses from the world, builds `WorldConfig`+scenarios, runs the GA with a per-tree evaluator that concatenates fitness vectors across all scenarios, saves the champion + per-gen checkpoints + timing CSV. |
-| `worker_server.py` | **Optional parallel mode.** ROS2 node (`ros2 run ... worker_server`) that wraps `run_episode` behind a small FastAPI app on port 8000. One per worker PC. Exposes `POST /evaluate` and `GET /health`. |
-| `coordinator.py` | **Optional parallel mode.** Pure-Python driver (`ros2 run ... coordinator` or `python3 -m ...evaluation.coordinator`). Reads a workers.yaml + ga_params.yaml, dispatches population evaluation across the worker pool over HTTP, runs the same GA loop. No `rclpy` dependency on the coordinator host. |
+| `worker_server.py` | **Optional parallel mode (HTTP).** ROS2 node (`ros2 run ... worker_server`) that wraps `run_episode` behind a small FastAPI app on port 8000. One per worker PC. Exposes `POST /evaluate` and `GET /health`. |
+| `coordinator.py` | **Optional parallel mode (HTTP).** Pure-Python driver (`ros2 run ... coordinator` or `python3 -m ...evaluation.coordinator`). Reads a workers.yaml + ga_params.yaml, dispatches population evaluation across the worker pool over HTTP, runs the same GA loop. No `rclpy` dependency on the coordinator host. |
+| `redis_worker.py` | **Optional parallel mode (Redis relay).** ROS2 node that loops over `BLPOP evo:jobs` on a hosted Redis, runs `run_episode`, pushes the result with `RPUSH evo:results`. Same role as `worker_server` but does not need any inbound connectivity — only outbound HTTPS to the Redis. |
+| `redis_coordinator.py` | **Optional parallel mode (Redis relay).** Pure-Python driver paired with `redis_worker`. Pushes one job per (individual × scenario) onto Redis, drains results by job_id, runs the GA loop. Use when the lab network blocks peer-to-peer connections. |
 | `timing.py` | Append-only event log used by `algorithm.run_ga`, `episode.run_episode`, and the orchestrator/coordinator to record per-phase wall times. Dumps to a CSV consumable by pandas/matplotlib. |
 
 #### `utils/` — shared helpers

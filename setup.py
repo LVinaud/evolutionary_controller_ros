@@ -28,6 +28,11 @@ setup(
             # see README ("Optional: parallel evaluation across machines").
             'worker_server = evolutionary_controller_ros.evaluation.worker_server:main',
             'coordinator = evolutionary_controller_ros.evaluation.coordinator:main',
+            # Optional Redis-relayed mode for networks that block
+            # peer-to-peer (eduroam client isolation, locked-down VLANs).
+            # Both sides only need outbound HTTPS to a hosted Redis.
+            'redis_worker = evolutionary_controller_ros.evaluation.redis_worker:main',
+            'redis_coordinator = evolutionary_controller_ros.evaluation.redis_coordinator:main',
         ],
     },
 )

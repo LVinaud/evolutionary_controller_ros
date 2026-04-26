@@ -75,8 +75,12 @@ def test_evaluate_population_dispatches_to_single_worker():
 
     def handler(request):
         received.append(json.loads(request.content))
+        # The worker handles ONE scenario per POST and returns the case
+        # vector for that scenario alone. With 2 metrics enabled, that is
+        # 2 floats per response; the coordinator concatenates across the
+        # 2 scenarios into a 4-float vector per individual.
         return httpx.Response(200, json={
-            "case_vector": [-1.0, 0.0, -2.0, 1.0],   # 2 metrics × 2 scenarios
+            "case_vector": [-1.0, 0.0],
             "history": {"min_dist_target_m": 1.0, "reached_target": False,
                         "collision_events": 2, "elapsed_s": 30.0},
             "wall_time_s": 30.5,
@@ -108,7 +112,7 @@ def test_round_robin_split():
         url = f"http://{request.url.host}:{request.url.port or 8000}"
         counts[url] += 1
         return httpx.Response(200, json={
-            "case_vector": [-1.0, 0.0, -2.0, 1.0],
+            "case_vector": [-1.0, 0.0],   # one scenario's worth of metrics
             "history": {"min_dist_target_m": 1.0, "reached_target": False,
                         "collision_events": 0, "elapsed_s": 30.0},
             "wall_time_s": 1.0,
@@ -138,7 +142,7 @@ def test_failure_retries_on_other_worker():
         if request.url.host == "w1":
             return httpx.Response(500, json={"detail": "boom"})
         return httpx.Response(200, json={
-            "case_vector": [-1.0, 0.0, -2.0, 1.0],
+            "case_vector": [-1.0, 0.0],   # per-scenario response
             "history": {"min_dist_target_m": 1.0, "reached_target": False,
                         "collision_events": 0, "elapsed_s": 30.0},
             "wall_time_s": 1.0,
@@ -152,7 +156,8 @@ def test_failure_retries_on_other_worker():
         duration_s=30.0, tick_hz=10.0, timing=None, gen=0,
         n_metrics_per_scenario=len(_METRICS), retries=1,
     )
-    assert out[0] == [-1.0, 0.0, -2.0, 1.0]   # rescued by w2
+    # 1 individual × 2 scenarios → 4 floats total (rescued by w2)
+    assert out[0] == [-1.0, 0.0, -1.0, 0.0]
     pool.close()
 
 

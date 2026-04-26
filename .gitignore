@@ -19,3 +19,7 @@ logs/
 genomes/*
 !genomes/.gitkeep
 !genomes/best.npy
+
+# Local config files containing tokens / IPs — never commit
+config/redis.env
+config/workers.yaml
