@@ -54,11 +54,15 @@ if ! command -v ros2 >/dev/null 2>&1; then
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
         | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
     sudo apt-get update
-    # ros-humble-xacro is listed explicitly because some apt mirrors do
-    # not pull it in transitively from ros-humble-desktop. prm_2026 ships
-    # the robot as `.urdf.xacro`, so the launch fails with
-    # "file not found: 'xacro'" if it's missing.
-    sudo apt-get install -y ros-humble-desktop ros-humble-xacro \
+    # Listed explicitly because some apt mirrors do not pull these in
+    # transitively from ros-humble-desktop:
+    #   ros-humble-xacro       — prm_2026 ships the robot as .urdf.xacro;
+    #                            launch fails with "file not found: 'xacro'"
+    #   ros-humble-topic-tools — prm_2026's carrega_robo.launch.py spawns
+    #                            a `relay-7` node from this package;
+    #                            launch fails with "package topic_tools
+    #                            not found"
+    sudo apt-get install -y ros-humble-desktop ros-humble-xacro ros-humble-topic-tools \
         ros-humble-ros-gz-bridge ros-humble-ros-gz-sim ros-humble-ros-gz-image \
         python3-colcon-common-extensions python3-rosdep python3-pip
     if [[ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]]; then
