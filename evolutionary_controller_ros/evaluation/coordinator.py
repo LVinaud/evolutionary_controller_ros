@@ -13,36 +13,51 @@ does **not** even need rclpy on the host — pure Python plus
 
 Workflow per generation
     1. The GA proposes a population of trees.
-    2. The coordinator submits one `httpx.post(worker_url + "/evaluate", ...)`
-       per individual via a `ThreadPoolExecutor` whose width equals the
-       number of workers. Round-robin assigns individuals to workers.
-    3. Each worker handles its assigned individuals strictly serially
-       (one Gazebo, one robot — concurrent calls return HTTP 503).
-    4. Coordinator collects N case vectors, hands them to lexicase
-       selection, runs crossover/mutation, repeats.
+    2. All N individuals go into a shared pending deque. One thread per
+       worker spins up; each thread is tied to ONE worker URL for the
+       entire generation. Each thread loops: pop an individual from the
+       deque, evaluate it on its own worker, store the result.
+    3. If a worker fails an individual (HTTP error, timeout), the
+       individual goes back to the deque. The next thread to become
+       free — driving a *different* worker — picks it up. After
+       `max_attempts` failures across any combination of workers, the
+       individual is marked failed (sentinel vector).
+    4. The generation completes when the deque is empty AND no worker
+       thread is mid-evaluation.
 
 Wire format is the EvaluateRequest/EvaluateResponse pair from
-`worker_server.py`. The coordinator's `evaluate_one` packages each
-scenario as a separate POST so per-scenario timing is preserved on the
-client side too.
+`worker_server.py`. The coordinator's `_evaluate_one_individual` packages
+each scenario as a separate POST so per-scenario timing is preserved on
+the client side too.
+
+Why "thread tied to one worker" matters
+    The earlier round-robin-with-retry scheme caused a 503 cascade: when
+    a worker hiccupped, the retry got dispatched to the *next* worker
+    URL, which was already busy with its own assigned individual. Both
+    requests competed for the same worker_server lock, one got 503,
+    triggered another retry, which collided with yet another busy
+    worker, and so on. Pinning each thread to one URL eliminates that
+    cross-thread contention entirely; failures are redistributed via
+    the shared deque, not via concurrent requests to the same server.
 
 Failure model
     A worker that returns non-2xx, times out, or refuses connection is
-    counted as a hard failure for that individual. The coordinator
-    retries once on a different worker (if any are reachable). Persistent
-    failure marks the individual with a sentinel "very bad" case vector
-    so lexicase selects against it. There is no bookkeeping of dead
-    workers — a worker that comes back alive in a later generation is
-    used again.
+    counted as one *attempt* against the individual. The individual is
+    re-queued and tried by the next free worker. After `max_attempts`
+    failures (default 5), the individual gets a sentinel "very bad"
+    case vector so lexicase rejects it — the GA continues without that
+    indi but does not crash.
 
 Static config: `--workers` (yaml with `workers: [{url: ...}, ...]`),
 `--params` (the same `ga_params.yaml` consumed by the single-machine
 orchestrator; only the GA fields are read, not the ROS plumbing).
 """
 import argparse
+import collections
 import json
 import random
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -162,47 +177,101 @@ def _evaluate_population(
     pool: WorkerPool, population: list, scenarios: list, world: dict,
     enabled_metrics: list, duration_s: float, tick_hz: float,
     timing: tlog.TimingLog | None, gen: int,
-    n_metrics_per_scenario: int, retries: int = 1,
+    n_metrics_per_scenario: int, max_attempts: int = 5,
+    gen_timeout_s: float | None = None,
 ) -> list[list[float]]:
-    """Dispatch the population across the worker pool in parallel.
+    """Dispatch the population across the worker pool via a shared deque.
 
-    Each individual is handled on a single worker (serial across that
-    worker's scenarios). Up to len(workers) individuals are in flight at
-    once. Hard failure on a worker triggers up to `retries` more attempts
-    on different workers; persistent failure is replaced by a sentinel
-    case vector that lexicase will reject.
+    Architecture
+        - One thread per worker URL, pinned for the whole generation.
+          Each thread loops: pop an individual from the shared pending
+          deque, evaluate it on its tied worker, write the result. By
+          construction, no two threads ever POST to the same worker
+          simultaneously, so the worker_server lock never sees
+          concurrent attempts from this coordinator.
+        - On failure, the individual returns to the deque (any worker
+          can pick it up next). The deque drains as fast as the slowest
+          worker — fast workers naturally pick up extra work.
+        - After `max_attempts` failures across any combination of
+          workers, the individual is marked failed (sentinel vector).
+        - Optional `gen_timeout_s` is a wall-clock cap on the whole
+          generation. None = wait indefinitely.
+
+    Why this replaces the old "round-robin + retry on next worker"
+        The previous design dispatched retries to `urls[(idx + 1) %
+        n_workers]`, which collided with whichever individual was
+        already assigned to that worker, causing a 503 cascade. Pinning
+        each thread to one URL makes failures redistribute via the
+        deque, not via concurrent requests to the same server.
     """
     n_workers = len(pool.urls)
     failure_vector = [_FAILURE_SENTINEL] * (
         n_metrics_per_scenario * len(scenarios))
 
-    def _try_one(idx: int, tree: dict) -> list[float]:
-        # First try is round-robin; retries pick the next workers in order.
-        for attempt in range(1 + retries):
-            worker = pool.urls[(idx + attempt) % n_workers]
+    pending: collections.deque = collections.deque(enumerate(population))
+    results: list[list[float] | None] = [None] * len(population)
+    attempts: list[int] = [0] * len(population)
+
+    state_lock = threading.Lock()
+    state_cond = threading.Condition(state_lock)
+    in_flight = [0]   # mutable container so closures can write
+    deadline = (time.monotonic() + gen_timeout_s) if gen_timeout_s else None
+
+    def _worker_loop(worker_url: str):
+        while True:
+            if deadline is not None and time.monotonic() > deadline:
+                return
+            with state_cond:
+                # Wait while pending is empty but some other thread is
+                # still in flight (it may re-queue on failure).
+                while not pending and in_flight[0] > 0:
+                    remaining = (deadline - time.monotonic()) if deadline else None
+                    if remaining is not None and remaining <= 0:
+                        return
+                    state_cond.wait(timeout=(remaining if remaining else 1.0))
+                if not pending:
+                    state_cond.notify_all()  # let other waiters realize we're done
+                    return
+                idx, tree = pending.popleft()
+                in_flight[0] += 1
+
             try:
                 cv, _ = _evaluate_one_individual(
-                    pool, worker, tree, scenarios, world,
+                    pool, worker_url, tree, scenarios, world,
                     enabled_metrics, duration_s, tick_hz,
                     timing, gen, idx)
-                return cv
+                with state_cond:
+                    results[idx] = cv
+                    in_flight[0] -= 1
+                    state_cond.notify_all()
             except Exception as e:
-                print(f"  [coord] gen={gen} ind={idx} worker={worker} "
-                      f"attempt {attempt + 1} FAILED: {e!r}",
-                      file=sys.stderr)
-                continue
-        print(f"  [coord] gen={gen} ind={idx} all workers failed; "
-              "marking as failed individual", file=sys.stderr)
-        return list(failure_vector)
+                with state_cond:
+                    attempts[idx] += 1
+                    print(f"  [coord] gen={gen} ind={idx} worker={worker_url} "
+                          f"attempt {attempts[idx]}/{max_attempts} FAILED: "
+                          f"{e!r}; re-queued",
+                          file=sys.stderr)
+                    if attempts[idx] < max_attempts:
+                        pending.append((idx, tree))
+                    else:
+                        print(f"  [coord] gen={gen} ind={idx} hit max_attempts; "
+                              "sentinel applied", file=sys.stderr)
+                        results[idx] = list(failure_vector)
+                    in_flight[0] -= 1
+                    state_cond.notify_all()
 
-    results: list[list[float] | None] = [None] * len(population)
-    with ThreadPoolExecutor(max_workers=n_workers) as pool_exec:
-        futures = {pool_exec.submit(_try_one, i, t): i
-                   for i, t in enumerate(population)}
+    with ThreadPoolExecutor(max_workers=n_workers) as exe:
+        futures = [exe.submit(_worker_loop, url) for url in pool.urls]
         for f in as_completed(futures):
-            i = futures[f]
-            results[i] = f.result()
-    return [r for r in results]  # type: ignore[return-value]
+            f.result()   # propagate any thread-level crash
+
+    # If gen_timeout_s fired with individuals still unfinished, fill in.
+    for i in range(len(population)):
+        if results[i] is None:
+            print(f"  [coord] gen={gen} ind={i} did not complete by deadline; "
+                  "sentinel applied", file=sys.stderr)
+            results[i] = list(failure_vector)
+    return results  # type: ignore[return-value]
 
 
 # --------------------------------------------------------------------------
@@ -234,8 +303,14 @@ def main():
                         help="where to write best.json + per-gen checkpoints + timing CSV")
     parser.add_argument("--timeout-s", type=float, default=600.0,
                         help="HTTP timeout per /evaluate request (default 10 min)")
-    parser.add_argument("--retries", type=int, default=1,
-                        help="how many times to retry an individual on a different worker after failure")
+    parser.add_argument("--max-attempts", type=int, default=5,
+                        help="how many times to attempt one individual across "
+                             "the worker pool before marking it failed "
+                             "(default 5)")
+    parser.add_argument("--gen-timeout-s", type=float, default=None,
+                        help="wall-clock cap for one generation; any unfinished "
+                             "individual gets the sentinel vector. None = wait "
+                             "indefinitely.")
     args = parser.parse_args()
 
     params = _load_params(Path(args.params))
@@ -290,7 +365,8 @@ def main():
             pool, population, scenarios, world, enabled_metrics,
             duration_s, tick_hz, timing, counter["gen"],
             n_metrics_per_scenario=len(enabled_metrics),
-            retries=args.retries,
+            max_attempts=args.max_attempts,
+            gen_timeout_s=args.gen_timeout_s,
         )
 
     def on_gen(gen, pop, case_matrix, best_idx):
