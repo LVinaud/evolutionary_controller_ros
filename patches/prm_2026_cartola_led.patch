@@ -1,0 +1,84 @@
+diff --git a/description/robot.urdf.xacro b/description/robot.urdf.xacro
+index 63ffb16..51b5235 100644
+--- a/description/robot.urdf.xacro
++++ b/description/robot.urdf.xacro
+@@ -145,6 +145,79 @@
+     <origin xyz="${caster_xoff} 0.0 ${-(base_height/2)}" rpy="0 0 0"/>
+   </joint>
+ 
++  <!-- =========================================================== -->
++  <!-- ADIÇÕES DO PACOTE evolutionary_controller_ros (Trabalho 1):  -->
++  <!--   - Cartola (top hat) puramente cosmética em cima do robô   -->
++  <!--   - LED no topo da cartola cujo material muda em tempo de    -->
++  <!--     execução conforme o estado da máquina de missão. O nome  -->
++  <!--     do visual (`led_visual`) é referenciado por                 -->
++  <!--     `world_reset.set_led_color` via /world/.../visual_config   -->
++  <!--     — não renomear sem atualizar lá.                           -->
++  <!-- =========================================================== -->
++
++  <xacro:property name="hat_brim_radius"  value="0.08"/>
++  <xacro:property name="hat_brim_height"  value="0.015"/>
++  <xacro:property name="hat_crown_radius" value="0.05"/>
++  <xacro:property name="hat_crown_height" value="0.10"/>
++  <xacro:property name="led_radius"       value="0.04"/>
++  <xacro:property name="led_height"       value="0.02"/>
++
++  <!-- Aba da cartola: disco achatado preto descansando no topo do chassi -->
++  <link name="hat_brim_link">
++    <visual>
++      <geometry>
++        <cylinder radius="${hat_brim_radius}" length="${hat_brim_height}"/>
++      </geometry>
++      <material name="HatBlack">
++        <color rgba="0.05 0.05 0.05 1.0"/>
++      </material>
++    </visual>
++    <xacro:cylinder_inertia m="0.01" r="${hat_brim_radius}" h="${hat_brim_height}"/>
++  </link>
++  <joint name="hat_brim_joint" type="fixed">
++    <parent link="base_link"/>
++    <child link="hat_brim_link"/>
++    <origin xyz="0 0 ${base_height/2 + hat_brim_height/2}" rpy="0 0 0"/>
++  </joint>
++
++  <!-- Copa da cartola: cilindro mais alto e mais estreito sobre a aba -->
++  <link name="hat_crown_link">
++    <visual>
++      <geometry>
++        <cylinder radius="${hat_crown_radius}" length="${hat_crown_height}"/>
++      </geometry>
++      <material name="HatBlack"/>
++    </visual>
++    <xacro:cylinder_inertia m="0.01" r="${hat_crown_radius}" h="${hat_crown_height}"/>
++  </link>
++  <joint name="hat_crown_joint" type="fixed">
++    <parent link="hat_brim_link"/>
++    <child link="hat_crown_link"/>
++    <origin xyz="0 0 ${hat_brim_height/2 + hat_crown_height/2}" rpy="0 0 0"/>
++  </joint>
++
++  <!-- LED no topo da copa: muda de cor com o estado da missão (em
++       Gazebo via /world/.../visual_config; ver gp_controller). -->
++  <link name="cartola_led_link">
++    <visual name="led_visual">
++      <geometry>
++        <cylinder radius="${led_radius}" length="${led_height}"/>
++      </geometry>
++      <material name="LedDefault">
++        <color rgba="1.0 1.0 1.0 1.0"/>
++      </material>
++    </visual>
++    <xacro:cylinder_inertia m="0.005" r="${led_radius}" h="${led_height}"/>
++  </link>
++  <joint name="cartola_led_joint" type="fixed">
++    <parent link="hat_crown_link"/>
++    <child link="cartola_led_link"/>
++    <origin xyz="0 0 ${hat_crown_height/2 + led_height/2}" rpy="0 0 0"/>
++  </joint>
++
++  <!-- Fim das adições do evolutionary_controller_ros. -->
++  <!-- =========================================================== -->
++
+   <!-- Definindo a IMU do Robô (física) -->
+   <link name="imu_link">
+     <visual>

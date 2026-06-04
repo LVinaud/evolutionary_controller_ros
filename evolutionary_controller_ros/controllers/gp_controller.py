@@ -82,6 +82,7 @@ from std_srvs.srv import Empty
 from ..evolution import genome as g
 from ..utils import sensors as sens
 from ..utils import flag_detection as fd
+from ..evaluation import world_reset as wr
 
 
 # CTF phases (for mode="ctf")
@@ -164,6 +165,10 @@ class GPController(Node):
 
         # Mission state machine.
         self._mission_state = _MISSION_EXPLORANDO
+        # Used to detect transitions so the LED colour only updates once
+        # per change instead of every tick (each update is an ign service
+        # subprocess call ≈ 100-300 ms).
+        self._prev_mission_state = None
         # Latest raw detection (after image processing, before hysteresis).
         self._raw_detected = False
         self._raw_bearing = 0.0
@@ -246,6 +251,30 @@ class GPController(Node):
         self.declare_parameter("explore_obstacle_radius_m", 0.6)
         self.declare_parameter("explore_v_frente", 0.25)
         self.declare_parameter("explore_w_gira", 0.6)
+        # ---- Cartola LED (visual feedback in Gazebo) --------------
+        # The robot wears a top hat with a cylindrical "LED" on top
+        # (see prm_2026/description/robot.urdf.xacro additions). When
+        # mode=="mission" the LED's diffuse colour is updated on every
+        # state transition via /world/<name>/visual_config so the
+        # operator can read the SM state from the Gazebo viewport. The
+        # ign service call runs in a background thread so it cannot
+        # block the 10 Hz tick.
+        self.declare_parameter("world_name", "capture_the_flag_world")
+        self.declare_parameter("robot_model_name", "prm_robot")
+        self.declare_parameter("led_link_name", "cartola_led_link")
+        self.declare_parameter("led_visual_name", "led_visual")
+        self.declare_parameter("led_update_enabled", True)
+        # Per-state RGB triples in [0, 1]. Defaults map state semantics
+        # onto natural traffic-light colours: yellow=searching, cyan=spotted,
+        # green=going, red=arrived.
+        self.declare_parameter("led_explorando_rgb",
+                               [1.0, 1.0, 0.0])
+        self.declare_parameter("led_bandeira_detectada_rgb",
+                               [0.0, 1.0, 1.0])
+        self.declare_parameter("led_navegando_rgb",
+                               [0.0, 1.0, 0.0])
+        self.declare_parameter("led_posicionando_rgb",
+                               [1.0, 0.0, 0.0])
 
     def _on_params_changed(self, params):
         from rcl_interfaces.msg import SetParametersResult
@@ -365,6 +394,13 @@ class GPController(Node):
             self._step_ctf_state_machine()
         elif mode == "mission":
             override = self._step_mission_state_machine()
+            # Detect mission state transitions and update the LED.
+            # Doing it here (after the SM step) means we fire exactly
+            # one update per change, regardless of how the SM moved.
+            if self._mission_state != self._prev_mission_state:
+                self._on_mission_state_changed(self._prev_mission_state,
+                                               self._mission_state)
+                self._prev_mission_state = self._mission_state
             if override is not None:
                 # State machine took direct control; bypass the GP tree.
                 self._last_twist = override
@@ -746,6 +782,56 @@ class GPController(Node):
             rclpy.parameter.Parameter(
                 "target_y", rclpy.parameter.Parameter.Type.DOUBLE, y),
         ])
+
+    # ----------------------------------------------------------------------
+    # Cartola LED — visual feedback in the Gazebo viewport
+    # ----------------------------------------------------------------------
+
+    def _on_mission_state_changed(self, prev, new):
+        """Hook fired exactly once per mission-state transition."""
+        if not bool(self.get_parameter("led_update_enabled").value):
+            return
+        rgb = self._led_rgb_for_state(new)
+        if rgb is None:
+            return
+        # Run the ign service call on a background thread. Subprocess
+        # roundtrip is ~100-300 ms; the 10 Hz tick budget is 100 ms;
+        # blocking inline would chew up an entire tick worth of compute.
+        import threading
+        world  = str(self.get_parameter("world_name").value)
+        model  = str(self.get_parameter("robot_model_name").value)
+        link   = str(self.get_parameter("led_link_name").value)
+        visual = str(self.get_parameter("led_visual_name").value)
+        r, g, b = rgb
+        def _worker():
+            try:
+                wr.set_visual_color(world, model, link, visual, r, g, b)
+                self.get_logger().info(
+                    f"[mission] LED → {new} (rgb={r:.2f},{g:.2f},{b:.2f})")
+            except Exception as e:
+                # Most common cause: gazebo not yet up, or the visual
+                # path doesn't match the SDF. Log once and keep going —
+                # the SM still works, only the visual feedback is lost.
+                self.get_logger().warn(
+                    f"[mission] LED update failed for {new}: {e}")
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _led_rgb_for_state(self, state):
+        """Map a mission-state name to an RGB triple from the params."""
+        if state == _MISSION_EXPLORANDO:
+            param = "led_explorando_rgb"
+        elif state == _MISSION_BANDEIRA_DETECTADA:
+            param = "led_bandeira_detectada_rgb"
+        elif state == _MISSION_NAVEGANDO_PARA_BANDEIRA:
+            param = "led_navegando_rgb"
+        elif state == _MISSION_POSICIONANDO_PARA_COLETA:
+            param = "led_posicionando_rgb"
+        else:
+            return None
+        triple = self.get_parameter(param).value
+        if triple is None or len(triple) != 3:
+            return None
+        return float(triple[0]), float(triple[1]), float(triple[2])
 
     # ----------------------------------------------------------------------
     # Holding flag latched publisher (observable by external tools)

@@ -84,6 +84,59 @@ def set_physics(
             f"ign set_physics failed (rc={result.returncode}): {result.stderr}")
 
 
+def set_visual_color(
+    world: str,
+    model: str,
+    link: str,
+    visual: str,
+    r: float,
+    g: float,
+    b: float,
+    a: float = 1.0,
+    timeout_ms: int = 1000,
+) -> None:
+    """Override a visual's diffuse + ambient material via ign service.
+
+    Targets `/world/<world>/visual_config`, which Gazebo Fortress
+    advertises with reqtype `ignition.msgs.Visual` and reptype
+    `ignition.msgs.Boolean`. The visual is identified by its triple
+    `(model, link, visual)` — all three names must match the URDF/SDF
+    exactly. We always set diffuse AND ambient so the change is
+    visible regardless of the scene lighting setup.
+
+    Used by `gp_controller`'s mission state machine to drive the
+    cartola LED (see prm_2026/description/robot.urdf.xacro,
+    `<visual name="led_visual"...>`). The colour mapping per state is
+    in `gp_controller._publish_mission_led_color`.
+    """
+    req = (
+        f'name: "{visual}", '
+        f'parent_name: "{link}", '
+        f'material {{ '
+            f'ambient {{ r: {r} g: {g} b: {b} a: {a} }}, '
+            f'diffuse {{ r: {r} g: {g} b: {b} a: {a} }}, '
+            f'specular {{ r: {r} g: {g} b: {b} a: {a} }}, '
+            f'emissive {{ r: {r} g: {g} b: {b} a: {a} }} '
+        f'}}'
+    )
+    cmd = [
+        "ign", "service",
+        "-s", f"/world/{world}/visual_config",
+        "--reqtype", "ignition.msgs.Visual",
+        "--reptype", "ignition.msgs.Boolean",
+        "--timeout", str(timeout_ms),
+        "--req", req,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=5.0)
+    if result.returncode != 0:
+        # Don't raise — the controller polls this on every state change;
+        # one transient failure shouldn't crash the mission. The caller
+        # logs; we just signal.
+        raise RuntimeError(
+            f"ign visual_config failed for {model}::{link}::{visual} "
+            f"(rc={result.returncode}): {result.stderr}")
+
+
 def query_model_poses(world: str, timeout_s: float = 3.0) -> dict:
     """Snapshot (x, y, yaw) of every model in the world.
 

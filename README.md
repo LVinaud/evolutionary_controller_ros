@@ -152,6 +152,50 @@ All in `mode="mission"` only; ignored by `train` and `ctf`:
 | `explore_obstacle_radius_m` | `0.6` | Trigger turn-in-place during EXPLORANDO |
 | `explore_v_frente` / `explore_w_gira` | `0.25` / `0.6` | Exploration speeds |
 
+### Robot URDF modifications: cartola + state LED
+
+The robot in `prm_2026/description/robot.urdf.xacro` was extended with two cosmetic links that double as visual feedback for the mission state machine. We chose to **modify the prof's URDF in place** (rather than fork it into this package) so that all of prm_2026's launch infrastructure — robot_state_publisher, ros2_control, the bridges — keeps working unchanged. The downside: `prm_2026` no longer matches its upstream commit; if you ever `git pull` it you'll re-apply the diff manually. Both additions are marked with a fenced comment block (`ADIÇÕES DO PACOTE evolutionary_controller_ros`) so the diff is easy to find and revert.
+
+What was added (in the `prm_2026` URDF):
+
+| Link | Geometry | Purpose |
+|---|---|---|
+| `hat_brim_link` | 8 cm-radius disc on top of the chassis | The hat's brim — fixed black, purely cosmetic |
+| `hat_crown_link` | 5 cm × 10 cm cylinder on top of the brim | The hat's crown — fixed black, gives the robot a distinctive silhouette |
+| `cartola_led_link` | 4 cm × 2 cm cylinder on top of the crown | The "LED": material is overwritten at runtime to signal the SM state |
+
+The LED's colour is updated by `gp_controller` every time the mission state machine transitions. The mechanism is `world_reset.set_visual_color(world, model, link, visual, r, g, b)`, which shells out to:
+
+```
+ign service -s /world/<name>/visual_config \
+    --reqtype ignition.msgs.Visual --reptype ignition.msgs.Boolean \
+    --req 'name: "led_visual" parent_name: "cartola_led_link"
+           material { ambient { r: ... g: ... b: ... a: 1.0 } diffuse {...} ...}'
+```
+
+The same `ign service` pattern the orchestrator already uses for `set_pose`. The call runs on a background thread so a slow round-trip (~100-300 ms) cannot block the 10 Hz controller tick.
+
+Default state → colour mapping (all overridable via `led_*_rgb` params):
+
+| State | Colour | RGB |
+|---|---|---|
+| `EXPLORANDO` | Yellow | `(1.0, 1.0, 0.0)` |
+| `BANDEIRA_DETECTADA` | Cyan | `(0.0, 1.0, 1.0)` |
+| `NAVEGANDO_PARA_BANDEIRA` | Green | `(0.0, 1.0, 0.0)` |
+| `POSICIONANDO_PARA_COLETA` | Red | `(1.0, 0.0, 0.0)` |
+
+To turn the LED update off (e.g. on machines where `ign service` round-trips are slow), set `led_update_enabled:=false`.
+
+**Applying the URDF mods on a fresh clone.** The diff is saved as `patches/prm_2026_cartola_led.patch` so anyone setting up a new workspace can reproduce the additions:
+
+```bash
+cd ~/ros2_ws/src/prm_2026
+git apply ~/ros2_ws/src/evolutionary_controller_ros/patches/prm_2026_cartola_led.patch
+cd ~/ros2_ws && colcon build --packages-select prm_2026
+```
+
+If the patch is not applied, `mission.launch.py` still works — the robot just runs without the visual feedback (the SM and detection are unaffected; only the LED-colour update will warn that the visual is missing).
+
 ### Budget
 
 - `pop_size = 20`, `n_generations = 30`, `2 scenarios × 30 s` per episode, `tick_hz = 10`.
@@ -184,21 +228,41 @@ There are two end-to-end flows: **training** (evolve a genome) and **CTF mission
 
 ### Training the genome
 
-Three terminals — Gazebo + robot + the GA orchestrator.
+Two workflows depending on whether you iterate or do a single fresh run.
+
+**Single command (fresh run, deliverable).** Brings up everything from scratch — Gazebo + robot + gp_controller in train mode + orchestrator — in one shot. Slower to start (~15 s of staggered TimerActions), but no terminal juggling:
 
 ```bash
-# Terminal 1 — Gazebo world (professor's package)
-LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 inicia_simulacao.launch.py
-
-# Terminal 2 — Robot + controllers + RViz (professor's package)
-LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 carrega_robo.launch.py
-
-# Terminal 3 — gp_controller in TRAIN mode + orchestrator
-ros2 launch evolutionary_controller_ros run_controller.launch.py   # in one terminal
-ros2 launch evolutionary_controller_ros train.launch.py            # in another
+LIBGL_ALWAYS_SOFTWARE=1 \
+    ros2 launch evolutionary_controller_ros train_all.launch.py
 ```
 
-Per-generation checkpoints are written to `genomes/gen_NNN_best.json`; the all-time best ends up in `genomes/best.json`. To override pop / generations:
+Override the GA params, output dir, or the world:
+
+```bash
+ros2 launch evolutionary_controller_ros train_all.launch.py \
+    params:=path/to/my_ga_params.yaml \
+    output_dir:=genomes/run_2026_05_01 \
+    world:=arena_cilindros.sdf
+```
+
+**Four terminals (heavy iteration).** Keep Gazebo + robot + gp_controller alive between training runs; only restart the orchestrator when you tweak GA hyperparameters. Faster inner loop because you skip the ~15 s Gazebo boot every time:
+
+```bash
+# Terminal 1 — Gazebo
+LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 inicia_simulacao.launch.py
+
+# Terminal 2 — Robot + controllers + RViz
+LIBGL_ALWAYS_SOFTWARE=1 ros2 launch prm_2026 carrega_robo.launch.py
+
+# Terminal 3 — gp_controller (train mode)
+ros2 launch evolutionary_controller_ros run_controller.launch.py
+
+# Terminal 4 — orchestrator (restart this between hyperparameter changes)
+ros2 launch evolutionary_controller_ros train.launch.py
+```
+
+Per-generation checkpoints land in `genomes/gen_NNN_best.json`; the all-time best ends up in `genomes/best.json`. To override pop / generations at the CLI:
 
 ```bash
 ros2 run evolutionary_controller_ros orchestrator --ros-args \
@@ -498,8 +562,9 @@ Use with `ros2 launch evolutionary_controller_ros <file>`.
 | File | Purpose |
 |---|---|
 | `mission.launch.py` | **Trabalho 1 deliverable.** One-button launch: brings up Gazebo + the prm_2026 robot + `gp_controller` in `mode="mission"` with a saved genome loaded. Stagger via `TimerAction` so the controller comes up only after the robot's topics exist. Args: `genome:=` (default `genomes/best.json`), `team:=blue|red`, `world:=`, `sim_delay_s` / `robot_delay_s` / `gp_delay_s`. |
-| `run_controller.launch.py` | Brings up only the `gp_controller` node in default `mode="train"`. Used during training (the orchestrator pushes `genome_json` and `target_x/y` per episode). |
-| `train.launch.py` | Brings up the `orchestrator` with parameters from `config/ga_params.yaml`. Used during evolutionary training. Does NOT start Gazebo or the robot — they stay alive in separate terminals between training runs. |
+| `train_all.launch.py` | One-button **training run**: Gazebo + robot + `gp_controller` (mode=train) + `orchestrator` reading `ga_params.yaml`. Single command for a fresh / deliverable training run. Slower-iteration alternative to the four-terminal setup. Args: `params:=`, `output_dir:=`, `world:=`, four `*_delay_s` knobs. |
+| `run_controller.launch.py` | Brings up only the `gp_controller` node in default `mode="train"`. Used during training when Gazebo and the robot are already alive in other terminals. |
+| `train.launch.py` | Brings up the `orchestrator` only (with parameters from `config/ga_params.yaml`). Use this when you've kept Gazebo + robot + gp_controller alive between runs and only want to restart the GA loop. |
 | `demo_best.launch.py` | Brings up `gp_controller` in `mode="ctf"`, loads a saved genome from disk into `genome_json`, and sets the CTF base/flag coordinates. `genome:=path/to/file.json` (default `genomes/best.json`). This is the CTF mission runner (Trabalho 2 placeholder, still uses hardcoded coords). |
 
 ### `config/` — parameters
