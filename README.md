@@ -206,9 +206,50 @@ ros2 run evolutionary_controller_ros orchestrator --ros-args \
     -p pop_size:=10 -p n_generations:=8
 ```
 
-### Running the trained genome through the CTF mission
+### Running the Trabalho 1 mission (one-button launch)
 
-`demo_best.launch.py` boots `gp_controller` in `mode="ctf"`, loads the genome JSON from disk, and injects the base/flag coordinates of `arena_cilindros.sdf`. The state machine then drives `genome → enemy_base → enemy_flag (PEGAR) → own_base (SOLTAR)`.
+This is the deliverable run: robot starts somewhere in the arena, explores until the flag enters its field of view, navigates to it, and stops in front of it. Everything (Gazebo, the robot stack, the controller in `mode="mission"`) comes up from a single command:
+
+```bash
+# loads genomes/best.json, robot plays blue team (chases red flag)
+ros2 launch evolutionary_controller_ros mission.launch.py
+```
+
+Custom genome / team / world:
+
+```bash
+# specific generation checkpoint
+ros2 launch evolutionary_controller_ros mission.launch.py \
+    genome:=genomes/gen_021_best.json
+
+# play as red (chase the blue flag, label 25)
+ros2 launch evolutionary_controller_ros mission.launch.py team:=red
+
+# slower hardware: bump startup delays
+ros2 launch evolutionary_controller_ros mission.launch.py \
+    robot_delay_s:=8.0 gp_delay_s:=18.0
+```
+
+While it runs you can watch the four-state machine progress live:
+
+```bash
+ros2 topic echo /flag/detected      # transitions Bool
+ros2 topic echo /flag/bearing_rad   # radians, 0 ahead
+ros2 topic echo /flag/distance_m    # LIDAR-fused distance, NaN if unknown
+```
+
+And the controller logs every state transition (`[mission] BANDEIRA_DETECTADA: bearing=+5.3°, distance=4.21m, area=156px` etc.).
+
+> **WSL GUI note.** If you're on a worker setup that patched prm_2026 to run Gazebo server-only (`ign gazebo -s`), revert the patch before demoing so you can see the robot:
+> ```bash
+> sed -i "s|'gazebo', '-s', '-r'|'gazebo', '-r'|" \
+>     ~/ros2_ws/src/prm_2026/launch/inicia_simulacao.launch.py
+> cd ~/ros2_ws && colcon build --packages-select prm_2026
+> ```
+
+### Running the trained genome through the CTF mission (Trabalho 2 scaffold)
+
+`demo_best.launch.py` boots `gp_controller` in `mode="ctf"`, loads the genome JSON from disk, and injects the base/flag coordinates of `arena_cilindros.sdf` directly (no visual detection — this is the legacy path). The state machine then drives `genome → enemy_base → enemy_flag (PEGAR) → own_base (SOLTAR)`.
 
 ```bash
 # Terminals 1 and 2 — same as training (world + robot)
@@ -456,9 +497,10 @@ Use with `ros2 launch evolutionary_controller_ros <file>`.
 
 | File | Purpose |
 |---|---|
+| `mission.launch.py` | **Trabalho 1 deliverable.** One-button launch: brings up Gazebo + the prm_2026 robot + `gp_controller` in `mode="mission"` with a saved genome loaded. Stagger via `TimerAction` so the controller comes up only after the robot's topics exist. Args: `genome:=` (default `genomes/best.json`), `team:=blue|red`, `world:=`, `sim_delay_s` / `robot_delay_s` / `gp_delay_s`. |
 | `run_controller.launch.py` | Brings up only the `gp_controller` node in default `mode="train"`. Used during training (the orchestrator pushes `genome_json` and `target_x/y` per episode). |
-| `train.launch.py` | Brings up the `orchestrator` with parameters from `config/ga_params.yaml`. This is the training command. |
-| `demo_best.launch.py` | Brings up `gp_controller` in `mode="ctf"`, loads a saved genome from disk into `genome_json`, and sets the CTF base/flag coordinates. `genome:=path/to/file.json` (default `genomes/best.json`). This is the **CTF mission runner** for an evolved genome. |
+| `train.launch.py` | Brings up the `orchestrator` with parameters from `config/ga_params.yaml`. Used during evolutionary training. Does NOT start Gazebo or the robot — they stay alive in separate terminals between training runs. |
+| `demo_best.launch.py` | Brings up `gp_controller` in `mode="ctf"`, loads a saved genome from disk into `genome_json`, and sets the CTF base/flag coordinates. `genome:=path/to/file.json` (default `genomes/best.json`). This is the CTF mission runner (Trabalho 2 placeholder, still uses hardcoded coords). |
 
 ### `config/` — parameters
 
