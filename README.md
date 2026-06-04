@@ -87,6 +87,71 @@ One ROS node serves both modes. The orchestrator never restarts it; instead:
 
 `holding_flag` lives **inside** the controller (not the trainer): the controller knows when it emitted `PEGAR` and whether the robot was within `grab_reach_m` of the enemy flag. It publishes to `/gp_controller/holding_flag` with `TRANSIENT_LOCAL` QoS so `episode.py` sees the latched state.
 
+### Mission state machine and visual detection (Trabalho 1)
+
+The Trabalho 1 deliverable is a robot that **explores the world, visually detects the flag, navigates to it, and positions itself next to it**. To meet that, the `gp_controller` ships a third operating mode — `mode="mission"` — that wraps the evolved GP tree inside a four-state mission machine.
+
+#### Why visual detection lives inside `gp_controller` and not in a separate node
+
+We chose to fold the labels-map processing, the LIDAR fusion, and the state machine into the existing `gp_controller` node rather than spinning up a dedicated `flag_detector` node. The state machine needs the detection and the geometry **on the same tick** to decide whether to update the GP tree's target or to take direct control of `/cmd_vel`; a separate node would add IPC latency to a 10 Hz loop for no real modularity gain. The pure-Python image processing still lives in `utils/flag_detection.py` (no ROS imports), so it remains unit-testable in isolation.
+
+#### Sensor inputs
+
+- `/robot_cam/labels_map` (`sensor_msgs/Image`, 320×240, 15 Hz) — Gazebo's segmentation plugin emits one image per frame where each pixel value is the integer label of the model that pixel belongs to. In `arena_cilindros.sdf`: `red_flag = 20`, `blue_flag = 25`. Detection is "find pixels with value == `enemy_flag_label`" — three lines of numpy. Robust to lighting, camera noise, and adversarial textures because the plugin gives us ground truth at the pixel level.
+- `/scan` — used twice: once for the GP tree's obstacle features (unchanged from training) and once to **fuse a distance estimate** with the camera bearing.
+
+#### Camera ↔ LIDAR fusion
+
+The camera gives bearing (which direction is the flag?), the LIDAR gives range (how far is the closest solid in that direction?). Combining them avoids either pinhole-camera math (needs the flag's physical size) or treating "area in pixels" as a proxy for distance (unreliable). Concretely:
+
+1. Compute `bearing_rad` from the centroid: `−(centroid_x − W/2) / W · horizontal_fov_rad` (sign flip because image-x grows right but yaw grows left).
+2. Map that bearing onto a LIDAR ray index: `(bearing − scan.angle_min) / scan.angle_increment`.
+3. Read the median of a 7-ray window around that index, ignoring NaN / inf / out-of-range returns.
+
+The 7-ray window smooths sensor noise but is narrow enough that a flag-sized target doesn't get blurred with a wall behind it. The fused distance is published to `/flag/distance_m` (NaN when unavailable) and consumed by the SM to decide when to switch from NAVEGANDO to POSICIONANDO.
+
+#### Hysteresis on detection
+
+A single dropped frame on the edge of the field of view would otherwise flicker the SM between EXPLORANDO and NAVEGANDO. Default settings: `flag_hysteresis_on = 3` (need three consecutive sees to declare detected), `flag_hysteresis_off = 5` (need five consecutive misses to lose it). Asymmetric on purpose — easier to keep the lock than to acquire it.
+
+#### Output topics for the SM and for debugging
+
+| Topic | Type | Description |
+|---|---|---|
+| `/flag/detected` | `std_msgs/Bool` | Filtered detection state, **latched** (`TRANSIENT_LOCAL`) so late subscribers see the current value |
+| `/flag/bearing_rad` | `std_msgs/Float32` | Robot-frame angle to the flag (0 ahead, + left, − right) |
+| `/flag/area_px` | `std_msgs/Int32` | Number of matching pixels in the current frame (raw, useful for tuning `flag_min_area_px`) |
+| `/flag/distance_m` | `std_msgs/Float32` | LIDAR-fused distance; NaN if unavailable |
+
+#### The four mission states
+
+| State | What happens | How it ends |
+|---|---|---|
+| `EXPLORANDO` | Bypass the GP tree — drive forward with a reactive front-cone obstacle avoid (turn left when blocked). The tree was evolved to chase a known target, so handing it an arbitrary one would mean "drive to (0, 0)", not "explore". | `/flag/detected` becomes True → `BANDEIRA_DETECTADA` |
+| `BANDEIRA_DETECTADA` | Transient one-tick state. Logs the detection metrics (`bearing`, `distance`, `area`) for traceability. Robot stops for one tick — visually obvious that something changed. | Always → `NAVEGANDO_PARA_BANDEIRA` |
+| `NAVEGANDO_PARA_BANDEIRA` | Convert `(bearing, distance)` into a world-frame `(target_x, target_y)` using `target = robot_pose + d · [cos(yaw + bearing), sin(yaw + bearing)]`, push that into the GP tree's params, and let the tree drive — same machinery as during evolutionary training, with all the obstacle-avoidance behaviour the tree already learned. | Distance < `posicionamento_radius_m` → `POSICIONANDO_PARA_COLETA`. Detection lost (after hysteresis) → back to `EXPLORANDO` |
+| `POSICIONANDO_PARA_COLETA` | Bypass the GP tree again. A P-style controller centres the bearing (turn until \|bearing\| < `posicionamento_bearing_tolerance_rad`) and then closes the final centimetres at half speed until distance ≈ `posicionamento_target_distance_m`. Robot then stops and holds. | Detection lost → back to `EXPLORANDO`. Otherwise terminal — Trabalho 1 done |
+
+Same `genome_json` works in `mission` mode without retraining: in NAVEGANDO_PARA_BANDEIRA we present the tree with exactly the kind of features it learned to navigate (target ahead/left/right/distance, obstacle cones).
+
+#### Parameters added for this mode
+
+All in `mode="mission"` only; ignored by `train` and `ctf`:
+
+| Parameter | Default | Purpose |
+|---|---|---|
+| `labels_topic` | `/robot_cam/labels_map` | Segmentation image topic |
+| `enemy_flag_label` | `20` (red) | Which label to chase. `25` for blue |
+| `camera_horizontal_fov_rad` | `1.57` (= 90°) | From prm_2026 URDF |
+| `flag_min_area_px` | `30` | Minimum matching pixels to consider detection |
+| `flag_hysteresis_on` / `_off` | `3` / `5` | Consecutive frames for state change |
+| `flag_max_distance_m` | `10.0` | LIDAR cap for fusion |
+| `posicionamento_radius_m` | `1.0` | Distance to switch into POSICIONANDO |
+| `posicionamento_target_distance_m` | `0.5` | Where to stop relative to the flag |
+| `posicionamento_bearing_tolerance_rad` | `0.1` (≈ 6°) | Centring precision |
+| `explore_obstacle_radius_m` | `0.6` | Trigger turn-in-place during EXPLORANDO |
+| `explore_v_frente` / `explore_w_gira` | `0.25` / `0.6` | Exploration speeds |
+
 ### Budget
 
 - `pop_size = 20`, `n_generations = 30`, `2 scenarios × 30 s` per episode, `tick_hz = 10`.
