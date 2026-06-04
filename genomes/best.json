@@ -1,0 +1,1 @@
+{"op":"IF","cond":{"term":"alvo_frente"},"then":{"leaf":"FRENTE","dur_ms":200},"else":{"op":"IF","cond":{"term":"alvo_esq"},"then":{"leaf":"GIRA_ESQ","dur_ms":150},"else":{"leaf":"GIRA_DIR","dur_ms":150}}}

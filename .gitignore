@@ -14,8 +14,11 @@ log/
 .idea/
 *.swp
 
-# Training logs and intermediate genomes — commit only the champion
+# Training logs and intermediate genomes — commit only the default seed
+# and the all-time champion so fresh clones can run mission.launch.py
+# without having to train first.
 logs/
 genomes/*
 !genomes/.gitkeep
 !genomes/best.npy
+!genomes/best.json
