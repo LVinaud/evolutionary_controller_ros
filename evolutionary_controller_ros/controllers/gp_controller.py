@@ -342,30 +342,49 @@ class GPController(Node):
     def _on_labels(self, msg):
         """Decode Gazebo semantic-segmentation Image to a numpy 2-D array.
 
-        The plugin emits a single-channel image where each pixel is the
-        integer label of the model it belongs to. Encoding is normally
-        `8UC1` (max label fits in a byte) but we accept `16UC1` for
-        worlds with more than 255 classes. We decode here (in the
-        subscription callback) so the per-tick `_update_detection` call
+        The plugin can emit the labels in a few different encodings
+        depending on Gazebo version and message-bridge settings:
+
+            * `8UC1` / `mono8`  — single-channel grayscale, pixel value
+                                  = label id. Easiest case.
+            * `16UC1` / `mono16` — same idea, 16-bit. For worlds with
+                                  more than 255 classes.
+            * `rgb8` / `bgr8`   — RGB image where the *first* channel
+                                  carries the label id (G and B carry
+                                  instance/metadata that we don't use).
+                                  This is what Gazebo Fortress publishes
+                                  on `/robot_cam/labels_map` after the
+                                  ros_gz_bridge mapping. We extract
+                                  channel 0 (R for rgb8, B for bgr8 —
+                                  but in practice the label is in the
+                                  first colour byte either way).
+
+        Decoding happens here so the per-tick `_update_detection` call
         stays cheap.
         """
         import numpy as np
         enc = msg.encoding
-        if enc in ("8UC1", "mono8"):
-            dtype = np.uint8
-        elif enc in ("16UC1", "mono16"):
-            dtype = np.uint16
-        else:
-            # Log once every couple of seconds at most.
-            now = self.get_clock().now().nanoseconds
-            if now - self._last_missing_log_ns >= 2_000_000_000:
-                self.get_logger().warn(
-                    f"unknown labels_map encoding {enc!r}; ignoring frame")
-                self._last_missing_log_ns = now
-            return
         try:
-            arr = np.frombuffer(msg.data, dtype=dtype).reshape(
-                msg.height, msg.width)
+            if enc in ("8UC1", "mono8"):
+                arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+                    msg.height, msg.width)
+            elif enc in ("16UC1", "mono16"):
+                arr = np.frombuffer(msg.data, dtype=np.uint16).reshape(
+                    msg.height, msg.width)
+            elif enc in ("rgb8", "bgr8"):
+                img = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+                    msg.height, msg.width, 3)
+                # Label is in the first byte of each pixel. For rgb8
+                # that's R; for bgr8 it's B — same physical byte, just
+                # different colour name. Taking channel 0 covers both.
+                arr = img[:, :, 0]
+            else:
+                now = self.get_clock().now().nanoseconds
+                if now - self._last_missing_log_ns >= 2_000_000_000:
+                    self.get_logger().warn(
+                        f"unknown labels_map encoding {enc!r}; ignoring frame")
+                    self._last_missing_log_ns = now
+                return
         except ValueError:
             return  # mismatched buffer size; drop frame quietly
         self._labels = arr
