@@ -123,6 +123,64 @@ def test_scan_index_raises_on_invalid_increment():
         fd.bearing_to_scan_index(0.0, -math.pi, 0.0, 360)
 
 
+def test_scan_index_wraps_negative_bearing_for_360_lidar():
+    """prm_2026 LIDAR is published as angle_min=0, angle_max≈2π.
+
+    A bearing of -10° (right of robot) must wrap to ≈ 350° on this kind
+    of scan, not return None. Regression test for the bug that left
+    /flag/distance_m as NaN every time the flag was to the right of
+    the robot.
+    """
+    n = 360
+    inc = 2 * math.pi / n
+    # bearing = -10° → should map to ≈ index 350
+    idx = fd.bearing_to_scan_index(
+        bearing_rad=math.radians(-10.0),
+        scan_angle_min=0.0,
+        scan_angle_increment=inc,
+        n_ranges=n,
+    )
+    assert idx == 350
+
+
+def test_scan_index_centre_bearing_zero_on_360_lidar():
+    n = 360
+    inc = 2 * math.pi / n
+    idx = fd.bearing_to_scan_index(0.0, 0.0, inc, n)
+    assert idx == 0
+
+
+def test_scan_index_partial_arc_negative_bearing_still_none():
+    """A non-360 scan keeps the old behaviour: outside coverage = None."""
+    n = 90
+    idx = fd.bearing_to_scan_index(
+        bearing_rad=math.radians(-30.0),
+        scan_angle_min=0.0,
+        scan_angle_increment=math.radians(1.0),
+        n_ranges=n,
+    )
+    # arc is only 90° wide so -30° is outside → None
+    assert idx is None
+
+
+def test_fuse_distance_wraps_window_on_360_lidar():
+    """Window straddles the array boundary on a 360° scan."""
+    n = 360
+    inc = 2 * math.pi / n
+    scan = [10.0] * n
+    # put a "flag" at indices 358, 359, 0, 1, 2 — straddles the seam
+    for i in (358, 359, 0, 1, 2):
+        scan[i] = 1.5
+    d = fd.fuse_distance_from_scan(
+        bearing_rad=0.0,        # exactly the seam
+        scan_ranges=scan,
+        scan_angle_min=0.0,
+        scan_angle_increment=inc,
+        window_half_width=3,
+    )
+    assert d == pytest.approx(1.5, abs=1e-6)
+
+
 # --------------------------------------------------------------------------
 # fuse_distance_from_scan — uses the median of a small window
 # --------------------------------------------------------------------------

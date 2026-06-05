@@ -100,14 +100,32 @@ def bearing_to_scan_index(
     """Map a robot-frame bearing onto the LIDAR's `ranges` array index.
 
     Returns None when the bearing falls outside the scan's angular
-    coverage (the LIDAR may not be 360°, depending on the robot).
+    coverage (the LIDAR may not be 360°, depending on the robot). For
+    full-circle LIDARs (`angle_max - angle_min >= 2π`), this function
+    wraps the bearing modulo 2π so that bearings like -10° map onto
+    the upper end of the ranges array (≈ 350° on a 0–360° scan).
+    Without that wrap, the prm_2026 LIDAR — which is published as
+    `angle_min=0, angle_max≈2π` — would silently return None for any
+    negative (right-of-robot) bearing, so the camera↔LIDAR fusion
+    would always read NaN for a flag on the right.
 
     This is the geometric half of the camera↔LIDAR fusion: the camera
     gives the bearing, this function picks the matching LIDAR ray, and
     the controller reads `ranges[index]` to get the actual distance.
     """
+    import math
     if scan_angle_increment <= 0.0:
         raise ValueError("scan_angle_increment must be positive")
+
+    total_arc = scan_angle_increment * n_ranges
+    is_full_circle = total_arc >= 2.0 * math.pi - 1e-3
+
+    if is_full_circle:
+        # Wrap bearing into [scan_angle_min, scan_angle_min + 2π).
+        normalised = (bearing_rad - scan_angle_min) % (2.0 * math.pi)
+        idx = int(round(normalised / scan_angle_increment)) % n_ranges
+        return idx
+
     idx = int(round((bearing_rad - scan_angle_min) / scan_angle_increment))
     if idx < 0 or idx >= n_ranges:
         return None
@@ -142,10 +160,15 @@ def fuse_distance_from_scan(
                                    scan_angle_increment, n)
     if centre is None:
         return None
-    lo = max(0, centre - window_half_width)
-    hi = min(n, centre + window_half_width + 1)
-    window = [r for r in scan_ranges[lo:hi]
-              if math.isfinite(r) and 0.0 < r <= max_distance_m]
+    # Build a window that wraps around the array if the centre is near
+    # the edge of a 360° scan — otherwise a flag at bearing ≈ 0 on the
+    # prm_2026 LIDAR (which starts at angle_min=0) would only see half
+    # of the window, biasing the median.
+    indices = [(centre + d) % n
+               for d in range(-window_half_width, window_half_width + 1)]
+    window = [scan_ranges[i] for i in indices
+              if math.isfinite(scan_ranges[i])
+              and 0.0 < scan_ranges[i] <= max_distance_m]
     if not window:
         return None
     window.sort()
